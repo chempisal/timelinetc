@@ -512,6 +512,250 @@ function updateOnlineStatus(isOnline) {
 window.addEventListener('online', () => updateOnlineStatus(true));
 window.addEventListener('offline', () => updateOnlineStatus(false));
 
+// -------------------------------------------------------------
+// CLOUD DATABASE & REALTIME AUTO-SYNC (សមកាលកម្ម Cloud DB ស្វ័យប្រវត្តិ)
+// -------------------------------------------------------------
+async function checkCloudStatus() {
+  try {
+    const res = await fetch('/api/cloud/status');
+    const json = await res.json();
+    if (json.status === 'success') {
+      appState.cloudProvider = json.provider;
+      const el = document.getElementById('cloud-sync-text');
+      if (el) {
+        if (json.has_vercel_kv) {
+          el.textContent = "Cloud: Vercel KV";
+        } else if (json.firebase_url) {
+          el.textContent = "Cloud: Firebase";
+        } else {
+          el.textContent = "Cloud Sync";
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Could not check cloud status:", e);
+  }
+}
+
+// Silent background auto-sync without interrupting user
+async function silentCloudSync() {
+  if (appState.isSyncing || !navigator.onLine) return;
+  appState.isSyncing = true;
+  try {
+    const res = await fetch('/api/data');
+    if (res.ok) {
+      const json = await res.json();
+      if (json.status === 'success') {
+        appState.data = json;
+        applyLocalStorageOverrides();
+        renderStatsBar();
+        renderActiveTab();
+      }
+    }
+  } catch (e) {
+    console.warn("Silent sync notice:", e);
+  } finally {
+    appState.isSyncing = false;
+  }
+}
+
+// Manual Sync by User
+async function manualCloudSync() {
+  const icon = document.getElementById('manual-sync-icon');
+  if (icon) icon.classList.add('animate-spin');
+
+  try {
+    const res = await fetch('/api/data');
+    const json = await res.json();
+    if (json.status === 'success') {
+      appState.data = json;
+      applyLocalStorageOverrides();
+      renderStatsBar();
+      renderActiveTab();
+      showToast("✅ បានទាញយកទិន្នន័យចុងក្រោយពី Cloud Database ដោយជោគជ័យ!");
+    } else {
+      alert("⚠️ " + (json.message || "មិនអាចទាញយកទិន្នន័យបានទេ"));
+    }
+  } catch (err) {
+    alert("⚠️ មិនអាចភ្ជាប់ទៅកាន់ Server ៖ " + err.message);
+  } finally {
+    setTimeout(() => {
+      if (icon) icon.classList.remove('animate-spin');
+    }, 600);
+  }
+}
+
+function showToast(msg) {
+  let toast = document.getElementById('app-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'app-toast';
+    toast.className = 'fixed top-16 right-4 z-50 bg-slate-900 text-white text-xs px-4 py-2.5 rounded-xl shadow-lg border border-slate-700 transition duration-300 transform translate-y-0 opacity-100 flex items-center gap-2';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.classList.remove('hidden', 'opacity-0');
+  setTimeout(() => {
+    toast.classList.add('opacity-0');
+    setTimeout(() => toast.classList.add('hidden'), 300);
+  }, 2500);
+}
+
+// Cloud Database Management Modal
+async function openCloudModal() {
+  const modal = document.getElementById('cloud-modal');
+  if (!modal) return;
+
+  modal.className = "fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto";
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-5 sm:p-6 space-y-4 my-auto border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+      <div class="flex justify-between items-center border-b pb-3">
+        <div class="flex items-center gap-2.5">
+          <span class="w-9 h-9 rounded-xl bg-sky-100 text-sky-700 flex items-center justify-center text-xl font-bold">☁️</span>
+          <div>
+            <h3 class="font-bold text-base text-gray-900">Cloud Database រួមគ្នានៅលើអនឡាញ</h3>
+            <p class="text-[11px] text-gray-500">សមកាលកម្មទិន្នន័យកាលវិភាគស្វ័យប្រវត្តិតាមរយៈ Cloud</p>
+          </div>
+        </div>
+        <button onclick="closeCloudModal()" class="text-gray-400 hover:text-gray-600 font-bold text-xl px-2">✕</button>
+      </div>
+
+      <!-- Cloud Status Box -->
+      <div id="cloud-modal-status-box" class="p-3.5 bg-sky-50 border border-sky-200 rounded-xl space-y-1.5 text-xs">
+        <div class="flex items-center justify-between">
+          <span class="font-bold text-sky-900">ស្ថានភាព Cloud Database ៖</span>
+          <span id="cloud-modal-provider-badge" class="px-2.5 py-0.5 rounded-full font-bold bg-sky-200 text-sky-800 text-[11px]">
+            កំពុងពិនិត្យ...
+          </span>
+        </div>
+        <div class="text-slate-600 flex items-center justify-between">
+          <span>សមកាលកម្មស្វ័យប្រវត្តិ (Auto-sync) ៖</span>
+          <span class="font-bold text-emerald-600">🟢 បើកដំណើរការរៀងរាល់ 30 វិនាទី</span>
+        </div>
+      </div>
+
+      <!-- Cloud Configuration Options for Admin -->
+      <div class="space-y-3">
+        <div class="border border-slate-200 rounded-xl p-3.5 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-xs text-slate-800">🔥 ជម្រើសទី១ ៖ Google Firebase Realtime Database (100% ឥតគិតថ្លៃ)</span>
+            <span class="text-[10px] text-emerald-600 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">ណែនាំ</span>
+          </div>
+          <p class="text-[11px] text-slate-500">គ្រាន់តែបង្កើត Database ដោយឥតគិតថ្លៃនៅ <strong>console.firebase.google.com</strong> រួចចម្លង Database URL មកបិទភ្ជាប់ត្រង់នេះ ៖</p>
+          <input
+            type="url"
+            id="cfg-firebase-url"
+            placeholder="https://your-project-default-rtdb.firebaseio.com"
+            class="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+
+        <div class="border border-slate-200 rounded-xl p-3.5 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-xs text-slate-800">⚡ ជម្រើសទី២ ៖ Vercel KV (Redis Cloud Storage)</span>
+            <span class="text-[10px] text-blue-600 font-semibold bg-blue-50 px-2 py-0.5 rounded border border-blue-200">ស្វ័យប្រវត្តិតាម Vercel</span>
+          </div>
+          <p class="text-[11px] text-slate-500">នៅក្នុងផ្ទាំង Vercel Dashboard គម្រោង <strong>timelinetc</strong> -> ចុចលើផ្ទាំង <strong>«Storage»</strong> -> បង្កើត <strong>«KV»</strong> រួចភ្ជាប់ទៅកាន់ Project នោះ Vercel នឹងភ្ជាប់ Database ឱ្យដោយស្វ័យប្រវត្តិ!</p>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="pt-2 border-t flex flex-wrap justify-between items-center gap-2 text-xs">
+        <div class="flex gap-2">
+          <button onclick="testCloudConnectionInModal()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg border border-slate-300 transition">
+            🔌 តេស្តការតភ្ជាប់
+          </button>
+          <button onclick="saveCloudConfigFromModal()" class="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-sm transition">
+            💾 រក្សាទុក URL
+          </button>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="pushDataToCloudFromModal()" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg shadow-sm transition flex items-center gap-1">
+            <span>☁️</span> Push ទៅ Cloud
+          </button>
+          <button onclick="closeCloudModal()" class="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg font-bold">
+            បិទ
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Fetch current config into input
+  try {
+    const res = await fetch('/api/cloud/status');
+    const json = await res.json();
+    if (json.status === 'success') {
+      const input = document.getElementById('cfg-firebase-url');
+      if (input && json.firebase_url) input.value = json.firebase_url;
+
+      const badge = document.getElementById('cloud-modal-provider-badge');
+      if (badge) {
+        if (json.has_vercel_kv) {
+          badge.textContent = "Vercel KV (បានភ្ជាប់)";
+          badge.className = "px-2.5 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-800 text-[11px]";
+        } else if (json.firebase_url) {
+          badge.textContent = "Google Firebase (បានកំណត់)";
+          badge.className = "px-2.5 py-0.5 rounded-full font-bold bg-blue-100 text-blue-800 text-[11px]";
+        } else {
+          badge.textContent = "Local Storage (មិនទាន់ភ្ជាប់ Cloud)";
+          badge.className = "px-2.5 py-0.5 rounded-full font-bold bg-slate-200 text-slate-700 text-[11px]";
+        }
+      }
+    }
+  } catch (e) {}
+}
+
+function closeCloudModal() {
+  const modal = document.getElementById('cloud-modal');
+  if (modal) {
+    modal.className = "hidden";
+    modal.innerHTML = "";
+  }
+}
+
+async function testCloudConnectionInModal() {
+  try {
+    const res = await fetch('/api/cloud/test', { method: 'POST' });
+    const json = await res.json();
+    alert(`[${json.provider}]\n\n${json.message}`);
+  } catch (e) {
+    alert("កំហុសក្នុងការតេស្ត ៖ " + e.message);
+  }
+}
+
+async function saveCloudConfigFromModal() {
+  const fbUrl = document.getElementById('cfg-firebase-url').value.trim();
+  try {
+    const res = await fetch('/api/cloud/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ firebase_url: fbUrl })
+    });
+    const json = await res.json();
+    if (json.status === 'success') {
+      alert("✅ " + json.message);
+      checkCloudStatus();
+    }
+  } catch (e) {
+    alert("កំហុសក្នុងការរក្សាទុក ៖ " + e.message);
+  }
+}
+
+async function pushDataToCloudFromModal() {
+  try {
+    const res = await fetch('/api/cloud/push', { method: 'POST' });
+    const json = await res.json();
+    if (json.status === 'success') {
+      alert("✅ " + json.message);
+    } else {
+      alert("⚠️ " + json.message);
+    }
+  } catch (e) {
+    alert("កំហុស ៖ " + e.message);
+  }
+}
+
 // Fetch initial data
 async function initApp() {
   loadStoredRole();
@@ -566,6 +810,19 @@ async function initApp() {
       }
     }
   }
+
+  // Check Cloud Database connection
+  checkCloudStatus();
+
+  // Auto-sync from online shared database every 30 seconds
+  setInterval(silentCloudSync, 30000);
+
+  // Auto-sync when user returns to app/tab
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      silentCloudSync();
+    }
+  });
 }
 
 // Refresh data from server without full reload

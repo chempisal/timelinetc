@@ -199,6 +199,15 @@
                   <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                   <span id="connection-status-text">អនឡាញ</span>
                 </span>
+                <button
+                  id="cloud-sync-btn"
+                  onclick="openCloudModal()"
+                  class="text-[10px] sm:text-xs font-bold text-sky-700 bg-sky-50 hover:bg-sky-100 px-1.5 py-0.5 rounded border border-sky-200 flex items-center gap-1 transition"
+                  title="ស្ថានភាព Cloud Database រួមគ្នា"
+                >
+                  <span>☁️</span>
+                  <span id="cloud-sync-text">Cloud Sync</span>
+                </button>
               </div>
               <h1 class="text-sm sm:text-lg font-black text-slate-900 tracking-tight truncate mt-0.5">
                 កាលវិភាគបង្រៀនគ្រូ
@@ -217,6 +226,16 @@
             >
               <span>📲</span>
               <span class="hidden sm:inline">ដំឡើង App</span>
+            </button>
+
+            <!-- Quick Manual Sync Button -->
+            <button
+              id="btn-manual-sync"
+              onclick="manualCloudSync()"
+              class="px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-bold shadow-sm transition flex items-center gap-1"
+              title="ទាញយកទិន្នន័យចុងក្រោយពី Cloud Database ភ្លាមៗ"
+            >
+              <span id="manual-sync-icon">🔄</span>
             </button>
 
             <!-- User Role Badge Button -->
@@ -343,6 +362,9 @@
 
   <!-- Role Switcher & Login Modal -->
   <div id="role-modal" class="hidden"></div>
+
+  <!-- Cloud Database Management Modal -->
+  <div id="cloud-modal" class="hidden"></div>
 
   <!-- General Edit Modal Container -->
   <div id="edit-modal"></div>

@@ -9,6 +9,7 @@ import json
 from collections import defaultdict
 from flask import Flask, render_template, jsonify, request, send_file, Response, send_from_directory
 from excel_exporter import create_styled_excel
+from cloud_db import CloudDatabase, load_cloud_config, save_cloud_config
 
 # Reconfigure stdout for utf-8 on Windows
 if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
@@ -59,7 +60,41 @@ def save_auth_config(cfg):
         except Exception:
             pass
 
-def load_data():
+def sync_data_to_cloud():
+    """Pushes current in-memory schedule and custom data to shared cloud database."""
+    try:
+        data = load_data(fetch_cloud=False)
+        custom_teachers = load_custom_teachers()
+        custom_hr = load_custom_homeroom()
+        auth_cfg = load_auth_config()
+        payload = {
+            'school_info': data.get('school_info', {}),
+            'subjects': data.get('subjects', {}),
+            'classes': data.get('classes', []),
+            'time_slots': data.get('time_slots', {}),
+            'morning_schedule': data.get('morning_schedule', {}),
+            'afternoon_schedule': data.get('afternoon_schedule', {}),
+            'custom_homeroom': custom_hr,
+            'custom_teachers': custom_teachers,
+            'auth_config': auth_cfg
+        }
+        CloudDatabase.push_online_data(payload)
+    except Exception as e:
+        print("[CloudDB] Error syncing to cloud:", e)
+
+def load_data(fetch_cloud=True):
+    # 1. Attempt to fetch latest shared dataset from Cloud Database first!
+    if fetch_cloud:
+        cloud_data = CloudDatabase.fetch_online_data()
+        if cloud_data and isinstance(cloud_data, dict) and 'classes' in cloud_data:
+            # Sync down any custom overrides into local runtime
+            if 'custom_homeroom' in cloud_data and isinstance(cloud_data['custom_homeroom'], dict):
+                save_custom_homeroom(cloud_data['custom_homeroom'], push_cloud=False)
+            if 'custom_teachers' in cloud_data and isinstance(cloud_data['custom_teachers'], dict):
+                save_custom_teachers(cloud_data['custom_teachers'], push_cloud=False)
+            return cloud_data
+
+    # 2. Fallback to local files if cloud is not configured or offline
     with open(DATA_FILE, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
@@ -87,7 +122,7 @@ def load_custom_homeroom():
             return {}
     return {}
 
-def save_custom_homeroom(homeroom_map):
+def save_custom_homeroom(homeroom_map, push_cloud=True):
     current = load_custom_homeroom()
     current.update(homeroom_map)
     try:
@@ -100,6 +135,9 @@ def save_custom_homeroom(homeroom_map):
                 json.dump(current, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+    if push_cloud:
+        sync_data_to_cloud()
 
 def load_custom_teachers():
     tmp_path = os.path.join('/tmp', 'custom_teachers.json')
@@ -117,7 +155,7 @@ def load_custom_teachers():
             return {}
     return {}
 
-def save_custom_teachers(teachers_map):
+def save_custom_teachers(teachers_map, push_cloud=True):
     current = load_custom_teachers()
     current.update(teachers_map)
     try:
@@ -130,6 +168,9 @@ def save_custom_teachers(teachers_map):
                 json.dump(current, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+    if push_cloud:
+        sync_data_to_cloud()
 
 def calculate_teacher_details(data, custom_teachers):
     """
@@ -470,6 +511,56 @@ def api_auth_change_pin():
     cfg['admin_pin'] = new_pin
     save_auth_config(cfg)
     return jsonify({'status': 'success', 'message': 'បានផ្លាស់ប្តូរលេខកូដ PIN សម្ងាត់ដោយជោគជ័យ'})
+
+@app.route('/api/cloud/status')
+def api_cloud_status():
+    provider, cfg = CloudDatabase.get_active_provider()
+    return jsonify({
+        'status': 'success',
+        'provider': provider,
+        'firebase_url': cfg.get('firebase_url', ''),
+        'has_vercel_kv': bool(cfg.get('vercel_kv_url') and cfg.get('vercel_kv_token')),
+        'last_synced_at': cfg.get('last_synced_at'),
+        'auto_sync': cfg.get('auto_sync', True)
+    })
+
+@app.route('/api/cloud/test', methods=['POST'])
+def api_cloud_test():
+    result = CloudDatabase.test_connection()
+    return jsonify(result)
+
+@app.route('/api/cloud/config', methods=['POST'])
+def api_cloud_config():
+    payload = request.json or {}
+    cfg = load_cloud_config()
+    if 'firebase_url' in payload:
+        cfg['firebase_url'] = payload['firebase_url'].strip()
+    if 'vercel_kv_url' in payload:
+        cfg['vercel_kv_url'] = payload['vercel_kv_url'].strip()
+    if 'vercel_kv_token' in payload:
+        cfg['vercel_kv_token'] = payload['vercel_kv_token'].strip()
+    if 'auto_sync' in payload:
+        cfg['auto_sync'] = bool(payload['auto_sync'])
+
+    save_cloud_config(cfg)
+    return jsonify({'status': 'success', 'message': 'បានរក្សាទុកការកំណត់ Cloud Database រួចរាល់'})
+
+@app.route('/api/cloud/push', methods=['POST'])
+def api_cloud_push():
+    sync_data_to_cloud()
+    return jsonify({'status': 'success', 'message': 'បាន Upload ទិន្នន័យកាលវិភាគទៅកាន់ Cloud Database រួចរាល់'})
+
+@app.route('/api/cloud/pull', methods=['POST'])
+def api_cloud_pull():
+    cloud_data = CloudDatabase.fetch_online_data()
+    if cloud_data:
+        if 'custom_homeroom' in cloud_data:
+            save_custom_homeroom(cloud_data['custom_homeroom'], push_cloud=False)
+        if 'custom_teachers' in cloud_data:
+            save_custom_teachers(cloud_data['custom_teachers'], push_cloud=False)
+        return jsonify({'status': 'success', 'message': 'បានទាញយកទិន្នន័យចុងក្រោយពី Cloud Database ជោគជ័យ'})
+    else:
+        return jsonify({'status': 'error', 'message': 'មិនមានទិន្នន័យនៅលើ Cloud ឬមិនទាន់បានតភ្ជាប់'}), 400
 
 @app.route('/api/data')
 def get_data():

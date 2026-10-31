@@ -1,0 +1,10 @@
+{
+  "provider": "auto",
+  "firebase_url": "",
+  "vercel_kv_url": "",
+  "vercel_kv_token": "",
+  "auto_sync": true,
+  "last_synced_at": null,
+  "status": "ready"
+}
+
