@@ -23,6 +23,41 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(BASE_DIR, 'data', 'schedule_data.json')
 CUSTOM_TEACHERS_FILE = os.path.join(BASE_DIR, 'data', 'custom_teachers.json')
 CUSTOM_HOMEROOM_FILE = os.path.join(BASE_DIR, 'data', 'custom_homeroom.json')
+AUTH_CONFIG_FILE = os.path.join(BASE_DIR, 'data', 'auth_config.json')
+
+DEFAULT_AUTH = {
+    'admin_pin': '1234',
+    'admin_title': 'នាយកសាលា / អ្នកគ្រប់គ្រងកាលវិភាគ',
+    'school_code': 'EDU2026'
+}
+
+def load_auth_config():
+    tmp_path = os.path.join('/tmp', 'auth_config.json')
+    if os.path.exists(tmp_path):
+        try:
+            with open(tmp_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    if os.path.exists(AUTH_CONFIG_FILE):
+        try:
+            with open(AUTH_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return DEFAULT_AUTH
+    return DEFAULT_AUTH
+
+def save_auth_config(cfg):
+    try:
+        with open(AUTH_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except (OSError, IOError, PermissionError):
+        try:
+            tmp_path = os.path.join('/tmp', 'auth_config.json')
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
 def load_data():
     with open(DATA_FILE, 'r', encoding='utf-8') as f:
@@ -349,6 +384,20 @@ def index():
 def serve_static(filename):
     return send_from_directory(os.path.join(BASE_DIR, 'static'), filename)
 
+@app.route('/manifest.json')
+def manifest():
+    return send_from_directory(os.path.join(BASE_DIR, 'static'), 'manifest.json', mimetype='application/manifest+json')
+
+@app.route('/sw.js')
+def service_worker():
+    response = send_from_directory(os.path.join(BASE_DIR, 'static'), 'sw.js', mimetype='application/javascript')
+    response.headers['Service-Worker-Allowed'] = '/'
+    return response
+
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(os.path.join(BASE_DIR, 'static'), 'favicon.png', mimetype='image/png')
+
 @app.route('/api/app.js')
 def serve_api_app_js():
     return send_from_directory(os.path.join(BASE_DIR, 'static', 'js'), 'app.js', mimetype='application/javascript')
@@ -356,6 +405,71 @@ def serve_api_app_js():
 @app.route('/api/styles.css')
 def serve_api_styles_css():
     return send_from_directory(os.path.join(BASE_DIR, 'static', 'css'), 'styles.css', mimetype='text/css')
+
+@app.route('/api/auth/login', methods=['POST'])
+def api_auth_login():
+    payload = request.json or {}
+    role = payload.get('role', 'student')
+    cfg = load_auth_config()
+
+    if role == 'admin':
+        pin = str(payload.get('pin', '')).strip()
+        expected = str(cfg.get('admin_pin', '1234')).strip()
+        if pin == expected:
+            return jsonify({
+                'status': 'success',
+                'role': 'admin',
+                'title': cfg.get('admin_title', 'អ្នកគ្រប់គ្រងកាលវិភាគ (Admin)'),
+                'permissions': ['read', 'edit_homeroom', 'edit_teachers', 'edit_schedule', 'export_excel', 'admin_settings'],
+                'message': 'ចូលប្រើប្រាស់ជាអ្នកគ្រប់គ្រងបានជោគជ័យ'
+            })
+        else:
+            return jsonify({'status': 'error', 'message': 'លេខសម្ងាត់ PIN មិនត្រឹមត្រូវទេ! (Default: 1234)'}), 401
+
+    elif role == 'teacher':
+        teacher_code = payload.get('teacher_code', '').strip().upper()
+        data = load_data()
+        custom_teachers = load_custom_teachers()
+        teachers = calculate_teacher_details(data, custom_teachers)
+        t = teachers.get(teacher_code)
+        name = t['name'] if t else f'គ្រូ {teacher_code}'
+        subject_name = t['subject_name'] if t else ''
+        return jsonify({
+            'status': 'success',
+            'role': 'teacher',
+            'teacher_code': teacher_code,
+            'name': name,
+            'subject_name': subject_name,
+            'permissions': ['read', 'edit_own_profile', 'export_excel'],
+            'message': f'ចូលប្រើប្រាស់ជា {name} ({teacher_code})'
+        })
+
+    else:
+        return jsonify({
+            'status': 'success',
+            'role': 'student',
+            'name': 'សិស្ស / អាណាព្យាបាល',
+            'permissions': ['read'],
+            'message': 'ចូលប្រើប្រាស់ជាសិស្ស / អាណាព្យាបាល'
+        })
+
+@app.route('/api/auth/change-pin', methods=['POST'])
+def api_auth_change_pin():
+    payload = request.json or {}
+    old_pin = str(payload.get('old_pin', '')).strip()
+    new_pin = str(payload.get('new_pin', '')).strip()
+
+    if not new_pin or len(new_pin) < 4:
+        return jsonify({'status': 'error', 'message': 'លេខសម្ងាត់ PIN ថ្មីត្រូវមានយ៉ាងតិច ៤ ខ្ទង់'}), 400
+
+    cfg = load_auth_config()
+    expected = str(cfg.get('admin_pin', '1234')).strip()
+    if old_pin != expected:
+        return jsonify({'status': 'error', 'message': 'លេខកូដ PIN ចាស់មិនត្រឹមត្រូវទេ'}), 401
+
+    cfg['admin_pin'] = new_pin
+    save_auth_config(cfg)
+    return jsonify({'status': 'success', 'message': 'បានផ្លាស់ប្តូរលេខកូដ PIN សម្ងាត់ដោយជោគជ័យ'})
 
 @app.route('/api/data')
 def get_data():

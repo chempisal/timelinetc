@@ -13,7 +13,7 @@
 let appState = {
   data: null,
   activeTab: 'teachers',
-  selectedTeacherCode: 'K1',
+  selectedTeacherCode: 'I3',
   selectedClassId: '12A',
   masterShift: 'morning',
   masterHighlightCode: '',
@@ -22,7 +22,13 @@ let appState = {
   directorySubjectFilter: 'ALL',
   directorySearchQuery: '',
   workloadFilter: 'ALL',
-  workloadSearch: ''
+  workloadSearch: '',
+  // User Roles & Permissions
+  userRole: 'student', // 'admin' | 'teacher' | 'student'
+  currentTeacherCode: '',
+  adminPin: '',
+  selectedDay: 'ALL', // 'ALL', 'TODAY', 'ចន្ទ', 'អង្គារ', 'ពុធ', 'ព្រហស្បតិ៍', 'សុក្រ', 'សៅរ៍'
+  isOnline: navigator.onLine
 };
 
 const PREFIX_MAP = ['Ed', 'En', 'Es', 'Em', 'K', 'M', 'P', 'C', 'B', 'H', 'G', 'I'];
@@ -93,17 +99,433 @@ function applyLocalStorageOverrides() {
   }
 }
 
+// -------------------------------------------------------------
+// USER ROLES & PERMISSIONS SYSTEM (ប្រព័ន្ធសិទ្ធិអ្នកប្រើប្រាស់)
+// -------------------------------------------------------------
+function loadStoredRole() {
+  try {
+    appState.userRole = localStorage.getItem('timeline_user_role') || 'student';
+    appState.currentTeacherCode = localStorage.getItem('timeline_teacher_code') || '';
+    appState.adminPin = localStorage.getItem('timeline_admin_pin') || '';
+    if (appState.userRole === 'teacher' && appState.currentTeacherCode) {
+      appState.selectedTeacherCode = appState.currentTeacherCode;
+    }
+  } catch (e) {}
+}
+
+function saveStoredRole(role, teacherCode = '', pin = '') {
+  try {
+    localStorage.setItem('timeline_user_role', role);
+    localStorage.setItem('timeline_teacher_code', teacherCode);
+    if (pin) localStorage.setItem('timeline_admin_pin', pin);
+    else localStorage.removeItem('timeline_admin_pin');
+    appState.userRole = role;
+    appState.currentTeacherCode = teacherCode;
+    appState.adminPin = pin;
+  } catch (e) {}
+  updateRoleUI();
+  renderActiveTab();
+}
+
+function updateRoleUI() {
+  const badgeText = document.getElementById('role-badge-text');
+  const badgeIcon = document.getElementById('role-badge-icon');
+  const bottomNavIcon = document.getElementById('bottom-nav-role-icon');
+  const bottomNavLabel = document.getElementById('bottom-nav-role-label');
+  const homeroomTabBtn = document.getElementById('tab-btn-homeroom');
+
+  let title = 'សិស្ស';
+  let icon = '🎓';
+
+  if (appState.userRole === 'admin') {
+    title = 'Admin';
+    icon = '🛡️';
+  } else if (appState.userRole === 'teacher') {
+    const t = appState.data && appState.data.teachers ? appState.data.teachers[appState.currentTeacherCode] : null;
+    title = t ? t.name : (appState.currentTeacherCode || 'គ្រូ');
+    icon = '👨‍🏫';
+  }
+
+  if (badgeText) badgeText.textContent = title;
+  if (badgeIcon) badgeIcon.textContent = icon;
+  if (bottomNavIcon) bottomNavIcon.textContent = icon;
+  if (bottomNavLabel) bottomNavLabel.textContent = title;
+
+  if (homeroomTabBtn) {
+    if (appState.userRole !== 'admin') {
+      homeroomTabBtn.innerHTML = `<span>🎯</span> <span>កែនាមគ្រូ</span> <span class="text-[10px] text-amber-500">🔒</span>`;
+    } else {
+      homeroomTabBtn.innerHTML = `<span>🎯</span> <span>កែនាមគ្រូបន្ទុកថ្នាក់</span>`;
+    }
+  }
+}
+
+function openRoleModal(initialTab = '') {
+  const modal = document.getElementById('role-modal');
+  if (!modal) return;
+
+  const currentRole = appState.userRole;
+  const teachers = appState.data ? appState.data.teachers : {};
+  const tList = Object.values(teachers).sort((a,b) => a.code.localeCompare(b.code));
+
+  modal.className = "fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto";
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-5 sm:p-6 space-y-4 my-auto border border-slate-200">
+      <div class="flex justify-between items-center border-b pb-3">
+        <div class="flex items-center gap-2">
+          <span class="w-8 h-8 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center text-lg font-bold">👤</span>
+          <div>
+            <h3 class="font-bold text-base text-gray-900">សិទ្ធិអ្នកប្រើប្រាស់ (User Roles)</h3>
+            <p class="text-[11px] text-gray-500">ជ្រើសរើសតួនាទីដើម្បីប្រើប្រាស់លើទូរស័ព្ទ ឬកុំព្យូទ័រ</p>
+          </div>
+        </div>
+        <button onclick="closeRoleModal()" class="text-gray-400 hover:text-gray-600 font-bold text-xl px-2">✕</button>
+      </div>
+
+      <div class="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
+        <span class="text-xs font-semibold text-gray-600">សិទ្ធិកំពុងប្រើប្រាស់ ៖</span>
+        <span class="px-2.5 py-1 text-xs font-extrabold rounded-full ${
+          currentRole === 'admin' ? 'bg-purple-100 text-purple-800' :
+          currentRole === 'teacher' ? 'bg-blue-100 text-blue-800' : 'bg-emerald-100 text-emerald-800'
+        }">
+          ${currentRole === 'admin' ? '🛡️ អ្នកគ្រប់គ្រង (Admin)' :
+            currentRole === 'teacher' ? `👨‍🏫 គ្រូ ${appState.currentTeacherCode}` : '🎓 សិស្ស & អាណាព្យាបាល'}
+        </span>
+      </div>
+
+      <div class="space-y-3">
+        <!-- 1. Student / Public Option -->
+        <div class="border rounded-xl p-3.5 transition ${currentRole === 'student' ? 'border-emerald-500 bg-emerald-50/40' : 'border-gray-200 hover:border-gray-300'}">
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex gap-2.5">
+              <span class="text-2xl">🎓</span>
+              <div>
+                <h4 class="font-bold text-sm text-gray-900">សិស្ស និងអាណាព្យាបាល</h4>
+                <p class="text-xs text-gray-500 mt-0.5">មើលកាលវិភាគតាមថ្នាក់រៀន តាមដានមុខវិជ្ជា និងម៉ោងរៀនប្រចាំថ្ងៃ (Read-only)</p>
+              </div>
+            </div>
+            <button
+              onclick="selectStudentRole()"
+              class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shrink-0 transition"
+            >
+              ${currentRole === 'student' ? '✓ កំពុងជ្រើស' : 'ជ្រើសរើស'}
+            </button>
+          </div>
+        </div>
+
+        <!-- 2. Teacher Option -->
+        <div class="border rounded-xl p-3.5 transition ${currentRole === 'teacher' ? 'border-blue-500 bg-blue-50/40' : 'border-gray-200 hover:border-gray-300'}">
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex gap-2.5">
+              <span class="text-2xl">👨‍🏫</span>
+              <div class="flex-1">
+                <h4 class="font-bold text-sm text-gray-900">លោកគ្រូ-អ្នកគ្រូ</h4>
+                <p class="text-xs text-gray-500 mt-0.5">ផ្ទាំងកាលវិភាគផ្ទាល់ខ្លួន កែប្រែព័ត៌មានទំនាក់ទំនង និងចែករំលែកតាម Telegram</p>
+                <div class="mt-2.5 flex items-center gap-2">
+                  <select id="modal-teacher-select" class="text-xs border border-gray-300 rounded-lg p-1.5 flex-1 focus:ring-2 focus:ring-blue-500">
+                    <option value="">-- ជ្រើសរើសឈ្មោះគ្រូ --</option>
+                    ${tList.map(t => `
+                      <option value="${t.code}" ${t.code === appState.currentTeacherCode ? 'selected' : ''}>
+                        ${t.code} - ${t.name} (${t.subject_name})
+                      </option>
+                    `).join('')}
+                  </select>
+                  <button
+                    onclick="selectTeacherRole()"
+                    class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shrink-0 transition"
+                  >
+                    ចូលប្រើ
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Administrator Option -->
+        <div class="border rounded-xl p-3.5 transition ${currentRole === 'admin' ? 'border-purple-500 bg-purple-50/40' : 'border-gray-200 hover:border-gray-300'}">
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex gap-2.5">
+              <span class="text-2xl">🛡️</span>
+              <div class="flex-1">
+                <h4 class="font-bold text-sm text-gray-900">នាយកសាលា / អ្នកគ្រប់គ្រង</h4>
+                <p class="text-xs text-gray-500 mt-0.5">សិទ្ធិពេញលេញ ៖ កែនាមគ្រូបន្ទុកថ្នាក់ បន្ថែម/កែ/លុបគ្រូមុខវិជ្ជា និងគ្រប់គ្រងទិន្នន័យ</p>
+                <div class="mt-2.5">
+                  <div class="flex items-center gap-2">
+                    <input
+                      type="password"
+                      id="modal-admin-pin"
+                      placeholder="PIN សម្ងាត់ (Default: 1234)"
+                      maxlength="10"
+                      class="text-xs border border-gray-300 rounded-lg p-1.5 flex-1 focus:ring-2 focus:ring-purple-500"
+                    />
+                    <button
+                      onclick="selectAdminRole()"
+                      class="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold shrink-0 transition"
+                    >
+                      ចូលជា Admin
+                    </button>
+                  </div>
+                  <div class="mt-2 text-right">
+                    <button onclick="togglePinChangeUI()" class="text-[11px] text-purple-700 hover:underline">
+                      🔑 ផ្លាស់ប្តូរលេខកូដ PIN ថ្មី
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Hidden Change PIN Drawer -->
+                <div id="drawer-change-pin" class="hidden mt-3 p-3 bg-white rounded-lg border border-purple-200 text-xs space-y-2">
+                  <div class="font-bold text-purple-900">ផ្លាស់ប្តូរលេខ PIN ថ្មី ៖</div>
+                  <input type="password" id="old-pin-input" placeholder="លេខកូដ PIN ចាស់" class="w-full border rounded p-1.5 text-xs">
+                  <input type="password" id="new-pin-input" placeholder="លេខកូដ PIN ថ្មី (យ៉ាងតិច ៤ ខ្ទង់)" class="w-full border rounded p-1.5 text-xs">
+                  <div class="flex justify-end gap-2 pt-1">
+                    <button onclick="togglePinChangeUI()" class="px-2.5 py-1 text-gray-500 text-xs">បោះបង់</button>
+                    <button onclick="submitChangePin()" class="px-3 py-1 bg-purple-600 text-white rounded text-xs font-bold">រក្សាទុក PIN ថ្មី</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pt-2 border-t flex justify-between items-center text-xs text-gray-500">
+        <span>ប្រព័ន្ធរក្សាទុកស្វ័យប្រវត្តិតាមឧបករណ៍</span>
+        <button onclick="closeRoleModal()" class="px-4 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-lg transition">បិទ</button>
+      </div>
+    </div>
+  `;
+}
+
+function closeRoleModal() {
+  const modal = document.getElementById('role-modal');
+  if (modal) {
+    modal.className = "hidden";
+    modal.innerHTML = "";
+  }
+}
+
+function selectStudentRole() {
+  saveStoredRole('student');
+  closeRoleModal();
+}
+
+async function selectTeacherRole() {
+  const select = document.getElementById('modal-teacher-select');
+  const code = select ? select.value.trim() : '';
+  if (!code) {
+    alert('សូមជ្រើសរើសឈ្មោះគ្រូបង្រៀនមួយរូប!');
+    return;
+  }
+  
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'teacher', teacher_code: code })
+    });
+    const result = await res.json();
+    if (result.status === 'success') {
+      saveStoredRole('teacher', code);
+      appState.selectedTeacherCode = code;
+      appState.activeTab = 'teachers';
+      closeRoleModal();
+    }
+  } catch (err) {
+    saveStoredRole('teacher', code);
+    appState.selectedTeacherCode = code;
+    appState.activeTab = 'teachers';
+    closeRoleModal();
+  }
+}
+
+async function selectAdminRole() {
+  const pinInput = document.getElementById('modal-admin-pin');
+  const pin = pinInput ? pinInput.value.trim() : '';
+  if (!pin) {
+    alert('សូមបញ្ចូលលេខកូដសម្ងាត់ PIN!');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'admin', pin: pin })
+    });
+    const result = await res.json();
+    if (result.status === 'success') {
+      saveStoredRole('admin', '', pin);
+      alert('✅ បានចូលប្រើប្រាស់ជាអ្នកគ្រប់គ្រង (Admin) ដោយជោគជ័យ!');
+      closeRoleModal();
+    } else {
+      alert(result.message || 'លេខសម្ងាត់ PIN មិនត្រឹមត្រូវទេ!');
+    }
+  } catch (err) {
+    if (pin === '1234' || (appState.adminPin && pin === appState.adminPin)) {
+      saveStoredRole('admin', '', pin);
+      alert('✅ បានចូលប្រើប្រាស់ជា Admin (Offline Mode)');
+      closeRoleModal();
+    } else {
+      alert('លេខកូដ PIN មិនត្រឹមត្រូវទេ! (Default PIN: 1234)');
+    }
+  }
+}
+
+function togglePinChangeUI() {
+  const drawer = document.getElementById('drawer-change-pin');
+  if (drawer) {
+    drawer.classList.toggle('hidden');
+  }
+}
+
+async function submitChangePin() {
+  const oldPin = document.getElementById('old-pin-input').value.trim();
+  const newPin = document.getElementById('new-pin-input').value.trim();
+  if (!oldPin || !newPin) {
+    alert('សូមបំពេញលេខ PIN ចាស់ និង PIN ថ្មី!');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/auth/change-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ old_pin: oldPin, new_pin: newPin })
+    });
+    const result = await res.json();
+    if (result.status === 'success') {
+      alert('✅ ' + result.message);
+      saveStoredRole('admin', '', newPin);
+      togglePinChangeUI();
+    } else {
+      alert('⚠️ ' + result.message);
+    }
+  } catch (err) {
+    alert('មានបញ្ហាក្នុងការភ្ជាប់ទៅ Server ៖ ' + err.message);
+  }
+}
+
+// Day Filter & Telegram Share Helpers
+function setDayFilter(day) {
+  if (day === 'TODAY') {
+    const khmerDays = ['អាទិត្យ', 'ចន្ទ', 'អង្គារ', 'ពុធ', 'ព្រហស្បតិ៍', 'សុក្រ', 'សៅរ៍'];
+    const todayIdx = new Date().getDay();
+    if (todayIdx === 0) {
+      alert('📅 ថ្ងៃនេះជាថ្ងៃអាទិត្យ (ថ្ងៃឈប់សម្រាក) — បង្ហាញកាលវិភាគថ្ងៃចន្ទជំនួស');
+      appState.selectedDay = 'ចន្ទ';
+    } else {
+      appState.selectedDay = khmerDays[todayIdx];
+    }
+  } else {
+    appState.selectedDay = day;
+  }
+  renderActiveTab();
+}
+
+function shareTeacherScheduleTelegram(code) {
+  const t = appState.data.teachers[code];
+  if (!t) return;
+
+  const school = appState.data.school_info ? appState.data.school_info.school_name : 'វិទ្យាល័យ';
+  const year = appState.data.school_info ? appState.data.school_info.academic_year : '២០២៦-២០២៧';
+  
+  let text = `📅 *កាលវិភាគបង្រៀនគ្រូ*\n`;
+  text += `🏫 ${school} | ឆ្នាំសិក្សា ${year}\n`;
+  text += `👤 *លោកគ្រូ-អ្នកគ្រូ* ៖ ${t.name} (${t.code})\n`;
+  text += `📚 *មុខវិជ្ជា* ៖ ${t.subject_name}\n`;
+  text += `⏱️ *បន្ទុកម៉ោង* ៖ ${t.total_hours} ម៉ោង/សប្ដាហ៍ (${t.classes.join(', ')})\n\n`;
+
+  const days = ['ចន្ទ', 'អង្គារ', 'ពុធ', 'ព្រហស្បតិ៍', 'សុក្រ', 'សៅរ៍'];
+  
+  text += `☀️ *ពេលព្រឹក* ៖\n`;
+  let hasM = false;
+  days.forEach(d => {
+    if (t.morning_slots && t.morning_slots[d] && Object.keys(t.morning_slots[d]).length > 0) {
+      const periods = Object.entries(t.morning_slots[d]).map(([p, cls]) => `ម៉ោង ${p} (${cls})`).join(', ');
+      text += `• ${d} ៖ ${periods}\n`;
+      hasM = true;
+    }
+  });
+  if (!hasM) text += `• គ្មានម៉ោងព្រឹក\n`;
+
+  text += `\n⛅ *ពេលរសៀល* ៖\n`;
+  let hasA = false;
+  days.forEach(d => {
+    if (t.afternoon_slots && t.afternoon_slots[d] && Object.keys(t.afternoon_slots[d]).length > 0) {
+      const periods = Object.entries(t.afternoon_slots[d]).map(([p, cls]) => `ម៉ោង ${p} (${cls})`).join(', ');
+      text += `• ${d} ៖ ${periods}\n`;
+      hasA = true;
+    }
+  });
+  if (!hasA) text += `• គ្មានម៉ោងរសៀល\n`;
+
+  text += `\n🌐 ចូលមើលលើអនឡាញ ៖ ${window.location.origin}`;
+
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(window.location.origin)}&text=${encodeURIComponent(text)}`;
+  window.open(shareUrl, '_blank');
+}
+
+function shareClassScheduleTelegram(classId) {
+  const cls = appState.data.classes.find(c => c.id === classId);
+  if (!cls) return;
+
+  const school = appState.data.school_info ? appState.data.school_info.school_name : 'វិទ្យាល័យ';
+  const year = appState.data.school_info ? appState.data.school_info.academic_year : '២០២៦-២០២៧';
+
+  let text = `📅 *កាលវិភាគសិក្សាថ្នាក់ ${cls.id}*\n`;
+  text += `🏫 ${school} | ឆ្នាំសិក្សា ${year}\n`;
+  text += `👨‍🏫 *គ្រូបន្ទុកថ្នាក់* ៖ ${cls.homeroom}\n\n`;
+
+  const mSlots = appState.data.morning_schedule[cls.id] || [];
+  const days = ['ចន្ទ', 'អង្គារ', 'ពុធ', 'ព្រហស្បតិ៍', 'សុក្រ', 'សៅរ៍'];
+  
+  text += `☀️ *កាលវិភាគពេលព្រឹក* ៖\n`;
+  days.forEach((d, dIdx) => {
+    const p1 = mSlots[dIdx * 4] || '--';
+    const p2 = mSlots[dIdx * 4 + 1] || '--';
+    const p3 = mSlots[dIdx * 4 + 2] || '--';
+    const p4 = mSlots[dIdx * 4 + 3] || '--';
+    text += `• ${d} ៖ 1-2(${p1}), 2-3(${p2}), 3-4(${p3}), 4-5(${p4})\n`;
+  });
+
+  text += `\n🌐 ចូលមើលលើអនឡាញ ៖ ${window.location.origin}`;
+
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(window.location.origin)}&text=${encodeURIComponent(text)}`;
+  window.open(shareUrl, '_blank');
+}
+
+function updateOnlineStatus(isOnline) {
+  appState.isOnline = isOnline;
+  const badge = document.getElementById('connection-status-badge');
+  const txt = document.getElementById('connection-status-text');
+  if (badge && txt) {
+    if (isOnline) {
+      badge.className = "text-[10px] sm:text-xs font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 flex items-center gap-1";
+      txt.textContent = "អនឡាញ";
+    } else {
+      badge.className = "text-[10px] sm:text-xs font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 flex items-center gap-1";
+      txt.textContent = "ក្រៅបណ្តាញ (Offline)";
+    }
+  }
+}
+window.addEventListener('online', () => updateOnlineStatus(true));
+window.addEventListener('offline', () => updateOnlineStatus(false));
+
 // Fetch initial data
 async function initApp() {
+  loadStoredRole();
+
   // 1. Instant hydration from pre-rendered window.INITIAL_DATA
   if (window.INITIAL_DATA && window.INITIAL_DATA.status === 'success') {
     appState.data = window.INITIAL_DATA;
     applyLocalStorageOverrides();
     const codes = Object.keys(appState.data.teachers || {});
     if (codes.length > 0 && !codes.includes(appState.selectedTeacherCode)) {
-      appState.selectedTeacherCode = codes[0];
+      appState.selectedTeacherCode = appState.currentTeacherCode || codes[0];
     }
     renderStatsBar();
+    updateRoleUI();
     renderActiveTab();
     setupEventListeners();
   }
@@ -336,15 +758,28 @@ function renderTeachersView(container) {
 
       <!-- Right area: Detailed Individual Teacher Schedule Card -->
       <div class="lg:col-span-8 space-y-4">
+        ${appState.userRole === 'teacher' && activeTeacher.code === appState.currentTeacherCode ? `
+          <div class="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-4 rounded-xl shadow-md flex items-center justify-between gap-3">
+            <div>
+              <div class="text-xs text-blue-200">👋 សូមស្វាគមន៍លោកគ្រូ-អ្នកគ្រូ</div>
+              <div class="text-lg font-black mt-0.5">${activeTeacher.name} (${activeTeacher.code})</div>
+              <div class="text-xs text-blue-100 mt-1">កាលវិភាគបង្រៀនផ្ទាល់ខ្លួនសរុប <strong>${activeTeacher.total_hours} ម៉ោង/សប្ដាហ៍</strong> (${activeTeacher.classes.join(', ')})</div>
+            </div>
+            <button onclick="shareTeacherScheduleTelegram('${activeTeacher.code}')" class="px-3.5 py-2 bg-white text-blue-700 font-extrabold text-xs rounded-lg shadow hover:bg-blue-50 transition shrink-0 flex items-center gap-1.5">
+              <span>✈️</span> ចែករំលែក Telegram
+            </button>
+          </div>
+        ` : ''}
+
         <!-- Top Teacher Profile Card -->
         <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
           <div class="flex flex-wrap items-center justify-between gap-4">
             <div class="flex items-center gap-3">
-              <span class="w-14 h-14 rounded-xl flex items-center justify-center font-black text-xl shadow-sm" style="background-color: ${activeTeacher.subject_color}; color: ${activeTeacher.subject_text_color}; border: 2px solid ${activeTeacher.subject_border}">
+              <span class="w-14 h-14 rounded-xl flex items-center justify-center font-black text-xl shadow-sm shrink-0" style="background-color: ${activeTeacher.subject_color}; color: ${activeTeacher.subject_text_color}; border: 2px solid ${activeTeacher.subject_border}">
                 ${activeTeacher.code}
               </span>
               <div>
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 flex-wrap">
                   <h2 class="text-xl font-bold text-gray-900">${activeTeacher.name}</h2>
                   <span class="px-2.5 py-0.5 text-xs rounded-full font-bold" style="background-color: ${activeTeacher.subject_color}; color: ${activeTeacher.subject_text_color}; border: 1px solid ${activeTeacher.subject_border}">
                     ${activeTeacher.subject_name}
@@ -365,19 +800,28 @@ function renderTeachersView(container) {
               </div>
             </div>
 
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
+              <button
+                onclick="shareTeacherScheduleTelegram('${activeTeacher.code}')"
+                class="px-3 py-2 bg-sky-500 hover:bg-sky-600 text-white rounded-lg text-sm font-semibold shadow-sm flex items-center gap-1.5 transition"
+                title="ផ្ញើកាលវិភាគទៅកាន់ Telegram"
+              >
+                <span>✈️</span> Telegram
+              </button>
               <button
                 onclick="printSingleTeacherCard('${activeTeacher.code}')"
-                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold shadow-sm flex items-center gap-1.5 transition"
+                class="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold shadow-sm flex items-center gap-1.5 transition"
               >
-                🖨️ បោះពុម្ពបណ្ណកាលវិភាគ
+                🖨️ បោះពុម្ព
               </button>
-              <button
-                onclick="openEditTeacherModal('${activeTeacher.code}')"
-                class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-semibold border border-gray-300 transition"
-              >
-                ✏️ កែព័ត៌មាន
-              </button>
+              ${(appState.userRole === 'admin' || (appState.userRole === 'teacher' && activeTeacher.code === appState.currentTeacherCode)) ? `
+                <button
+                  onclick="openEditTeacherModal('${activeTeacher.code}')"
+                  class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-semibold border border-gray-300 transition"
+                >
+                  ✏️ កែព័ត៌មាន
+                </button>
+              ` : ''}
             </div>
           </div>
 
@@ -401,29 +845,48 @@ function renderTeachersView(container) {
           </div>
         </div>
 
-        <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200 space-y-6">
-          <div>
-            <div class="flex items-center justify-between mb-2">
-              <h3 class="text-sm font-bold text-gray-800 flex items-center gap-1.5">
-                <span class="w-3 h-3 rounded-full bg-blue-500 inline-block"></span>
-                កាលវិភាគពេលព្រឹក (Morning Schedule) - ចំនួន ${activeTeacher.morning_hours} ម៉ោង
-              </h3>
-              <span class="text-xs text-gray-500">ម៉ោង ៧:០០ - ១២:០០</span>
-            </div>
-            ${generateTeacherGridHTML(activeTeacher, 'morning')}
+        <!-- Day Filter Bar -->
+        <div class="bg-white p-3 rounded-xl shadow-sm border border-gray-200 flex items-center justify-between gap-2 flex-wrap">
+          <div class="flex items-center gap-1 overflow-x-auto text-xs py-0.5">
+            <span class="text-xs font-bold text-slate-500 mr-1 hidden sm:inline">📅 ជ្រើសរើសថ្ងៃ ៖</span>
+            <button onclick="setDayFilter('ALL')" class="px-3 py-1 rounded-full border transition ${appState.selectedDay === 'ALL' ? 'bg-blue-600 text-white font-bold' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">ទាំងអស់</button>
+            <button onclick="setDayFilter('TODAY')" class="px-3 py-1 rounded-full border transition ${appState.selectedDay === 'TODAY' ? 'bg-amber-600 text-white font-bold' : 'bg-amber-50 text-amber-700 border-amber-200 font-semibold'}">⚡ ថ្ងៃនេះ</button>
+            ${days.map(d => `
+              <button onclick="setDayFilter('${d}')" class="px-2.5 py-1 rounded-full border transition ${appState.selectedDay === d ? 'bg-blue-600 text-white font-bold' : 'bg-white text-gray-600 hover:bg-gray-100'}">${d}</button>
+            `).join('')}
           </div>
-
-          <div>
-            <div class="flex items-center justify-between mb-2">
-              <h3 class="text-sm font-bold text-gray-800 flex items-center gap-1.5">
-                <span class="w-3 h-3 rounded-full bg-amber-500 inline-block"></span>
-                កាលវិភាគពេលរសៀល (Afternoon Schedule) - ចំនួន ${activeTeacher.afternoon_hours} ម៉ោង
-              </h3>
-              <span class="text-xs text-gray-500">ម៉ោង ១៣:០០ - ១៧:០០</span>
-            </div>
-            ${generateTeacherGridHTML(activeTeacher, 'afternoon')}
+          <div class="text-xs text-slate-500 font-semibold">
+            ${appState.selectedDay === 'ALL' ? 'ទិដ្ឋភាពពេញសប្តាហ៍' : `ទិដ្ឋភាពថ្ងៃ${appState.selectedDay}`}
           </div>
         </div>
+
+        ${appState.selectedDay !== 'ALL' ? `
+          ${generateTeacherDailyCardsHTML(activeTeacher, appState.selectedDay)}
+        ` : `
+          <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200 space-y-6">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <h3 class="text-sm font-bold text-gray-800 flex items-center gap-1.5">
+                  <span class="w-3 h-3 rounded-full bg-blue-500 inline-block"></span>
+                  កាលវិភាគពេលព្រឹក (Morning Schedule) - ចំនួន ${activeTeacher.morning_hours} ម៉ោង
+                </h3>
+                <span class="text-xs text-gray-500">ម៉ោង ៧:០០ - ១២:០០</span>
+              </div>
+              ${generateTeacherGridHTML(activeTeacher, 'morning')}
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <h3 class="text-sm font-bold text-gray-800 flex items-center gap-1.5">
+                  <span class="w-3 h-3 rounded-full bg-amber-500 inline-block"></span>
+                  កាលវិភាគពេលរសៀល (Afternoon Schedule) - ចំនួន ${activeTeacher.afternoon_hours} ម៉ោង
+                </h3>
+                <span class="text-xs text-gray-500">ម៉ោង ១៣:០០ - ១៧:០០</span>
+              </div>
+              ${generateTeacherGridHTML(activeTeacher, 'afternoon')}
+            </div>
+          </div>
+        `}
       </div>
     </div>
   `;
@@ -440,6 +903,196 @@ function renderTeachersView(container) {
       }
     });
   }
+}
+
+function generateTeacherDailyCardsHTML(teacher, dayName) {
+  const mSlots = teacher.morning_slots && teacher.morning_slots[dayName] ? teacher.morning_slots[dayName] : {};
+  const aSlots = teacher.afternoon_slots && teacher.afternoon_slots[dayName] ? teacher.afternoon_slots[dayName] : {};
+
+  const mPeriods = [
+    { name: 'ម៉ោង ៧-៨', label: '7-8', classId: mSlots['7-8'] },
+    { name: 'ម៉ោង ៨-៩', label: '8-9', classId: mSlots['8-9'] },
+    { name: 'ម៉ោង ៩-១០', label: '9-10', classId: mSlots['9-10'] },
+    { name: 'ម៉ោង ១០-១១', label: '10-11', classId: mSlots['10-11'] },
+    { name: 'ម៉ោង ១១-១២', label: '11-12', classId: mSlots['11-12'] }
+  ];
+
+  const aPeriods = [
+    { name: 'ម៉ោង ១-២', label: '1-2', classId: aSlots['1-2'] },
+    { name: 'ម៉ោង ២-៣', label: '2-3', classId: aSlots['2-3'] },
+    { name: 'ម៉ោង ៣-៤', label: '3-4', classId: aSlots['3-4'] },
+    { name: 'ម៉ោង ៤-៥', label: '4-5', classId: aSlots['4-5'] }
+  ];
+
+  const totalTeaching = Object.keys(mSlots).length + Object.keys(aSlots).length;
+
+  return `
+    <div class="space-y-4">
+      <div class="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 p-4 rounded-xl flex items-center justify-between">
+        <div>
+          <span class="text-xs font-bold text-blue-700 uppercase">ទិដ្ឋភាពប្រចាំថ្ងៃ (Daily View)</span>
+          <h4 class="text-lg font-black text-blue-950 mt-0.5">ថ្ងៃ${dayName}</h4>
+        </div>
+        <div class="text-right">
+          <span class="px-3 py-1 bg-blue-600 text-white font-bold rounded-full text-xs shadow-sm">
+            ${totalTeaching > 0 ? `មានបង្រៀន ${totalTeaching} ម៉ោង` : '🌴 ទំនេរ (គ្មានម៉ោង)'}
+          </span>
+        </div>
+      </div>
+
+      <!-- Morning Periods -->
+      <div class="bg-white rounded-xl border border-gray-200 p-4 space-y-2.5">
+        <div class="text-xs font-bold text-blue-700 flex items-center gap-1.5 pb-2 border-b">
+          <span class="w-2.5 h-2.5 rounded-full bg-blue-500"></span>
+          ពេលព្រឹក (៧:០០ - ១២:០០)
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          ${mPeriods.map(p => `
+            <div class="p-3 rounded-lg border flex items-center justify-between ${p.classId ? 'bg-blue-50/70 border-blue-300' : 'bg-gray-50 border-gray-200 opacity-60'}">
+              <span class="text-xs font-bold ${p.classId ? 'text-blue-900' : 'text-gray-500'}">${p.name}</span>
+              ${p.classId ? `
+                <span class="px-3 py-1 bg-blue-600 text-white font-extrabold text-xs rounded-md shadow-sm">
+                  ថ្នាក់ ${p.classId}
+                </span>
+              ` : `
+                <span class="text-xs text-gray-400 font-medium">ទំនេរ</span>
+              `}
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Afternoon Periods -->
+      <div class="bg-white rounded-xl border border-gray-200 p-4 space-y-2.5">
+        <div class="text-xs font-bold text-amber-700 flex items-center gap-1.5 pb-2 border-b">
+          <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+          ពេលរសៀល (១៣:០០ - ១៧:០០)
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          ${aPeriods.map(p => {
+            const isLabor = dayName === 'ព្រហស្បតិ៍';
+            return `
+              <div class="p-3 rounded-lg border flex items-center justify-between ${
+                isLabor ? 'bg-orange-50 border-orange-200' :
+                p.classId ? 'bg-amber-50/70 border-amber-300' : 'bg-gray-50 border-gray-200 opacity-60'
+              }">
+                <span class="text-xs font-bold ${p.classId ? 'text-amber-900' : 'text-gray-500'}">${p.name}</span>
+                ${isLabor ? `
+                  <span class="px-2.5 py-0.5 bg-orange-100 text-orange-800 font-bold text-xs rounded">ពលកម្ម</span>
+                ` : p.classId ? `
+                  <span class="px-3 py-1 bg-amber-600 text-white font-extrabold text-xs rounded-md shadow-sm">
+                    ថ្នាក់ ${p.classId}
+                  </span>
+                ` : `
+                  <span class="text-xs text-gray-400 font-medium">ទំនេរ</span>
+                `}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function generateClassDailyCardsHTML(classId, dayName) {
+  const days = ['ចន្ទ', 'អង្គារ', 'ពុធ', 'ព្រហស្បតិ៍', 'សុក្រ', 'សៅរ៍'];
+  const dayIdx = days.indexOf(dayName);
+  if (dayIdx === -1) return '';
+
+  const mSlots = appState.data.morning_schedule[classId] || [];
+  const aSlots = appState.data.afternoon_schedule[classId] || [];
+  const teachers = appState.data.teachers || {};
+
+  const mPeriods = [
+    { name: 'ម៉ោង ៧-៨', code: mSlots[dayIdx * 4] },
+    { name: 'ម៉ោង ៨-៩', code: mSlots[dayIdx * 4 + 1] },
+    { name: 'ម៉ោង ៩-១០', code: mSlots[dayIdx * 4 + 2] },
+    { name: 'ម៉ោង ១០-១១', code: mSlots[dayIdx * 4 + 3] }
+  ];
+
+  const aPeriods = [
+    { name: 'ម៉ោង ១-២', code: aSlots[dayIdx * 4] },
+    { name: 'ម៉ោង ២-៣', code: aSlots[dayIdx * 4 + 1] },
+    { name: 'ម៉ោង ៣-៤', code: aSlots[dayIdx * 4 + 2] },
+    { name: 'ម៉ោង ៤-៥', code: aSlots[dayIdx * 4 + 3] }
+  ];
+
+  return `
+    <div class="space-y-4">
+      <div class="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 p-4 rounded-xl flex items-center justify-between">
+        <div>
+          <span class="text-xs font-bold text-blue-700 uppercase">កាលវិភាគថ្នាក់ ${classId}</span>
+          <h4 class="text-lg font-black text-blue-950 mt-0.5">ថ្ងៃ${dayName}</h4>
+        </div>
+        <button onclick="shareClassScheduleTelegram('${classId}')" class="px-3 py-1.5 bg-sky-500 hover:bg-sky-600 text-white rounded-lg text-xs font-bold shadow-sm transition flex items-center gap-1">
+          <span>✈️</span> Telegram
+        </button>
+      </div>
+
+      <!-- Morning Periods -->
+      <div class="bg-white rounded-xl border border-gray-200 p-4 space-y-2.5">
+        <div class="text-xs font-bold text-blue-700 flex items-center gap-1.5 pb-2 border-b">
+          <span class="w-2.5 h-2.5 rounded-full bg-blue-500"></span>
+          ពេលព្រឹក (៧:០០ - ១២:០០)
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          ${mPeriods.map(p => {
+            const t = p.code && teachers[p.code] ? teachers[p.code] : null;
+            return `
+              <div class="p-3 rounded-lg border flex items-center justify-between ${p.code ? 'bg-blue-50/70 border-blue-300' : 'bg-gray-50 border-gray-200 opacity-60'}">
+                <span class="text-xs font-bold ${p.code ? 'text-blue-900' : 'text-gray-500'}">${p.name}</span>
+                ${p.code ? `
+                  <div class="text-right">
+                    <span class="inline-block px-2.5 py-0.5 font-extrabold text-xs rounded" style="background-color: ${t ? t.subject_color : '#e2e8f0'}; color: ${t ? t.subject_text_color : '#1e293b'}">
+                      ${t ? t.subject_name : p.code}
+                    </span>
+                    <div class="text-[10px] text-gray-500 mt-0.5">${t ? t.name : p.code} (${p.code})</div>
+                  </div>
+                ` : `
+                  <span class="text-xs text-gray-400 font-medium">គ្មានម៉ោង</span>
+                `}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- Afternoon Periods -->
+      <div class="bg-white rounded-xl border border-gray-200 p-4 space-y-2.5">
+        <div class="text-xs font-bold text-amber-700 flex items-center gap-1.5 pb-2 border-b">
+          <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+          ពេលរសៀល (១៣:០០ - ១៧:០០)
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          ${aPeriods.map(p => {
+            const isLabor = p.code === 'ពលកម្ម' || (dayName === 'ព្រហស្បតិ៍' && (!p.code || p.code === 'ពលកម្ម'));
+            const t = p.code && teachers[p.code] ? teachers[p.code] : null;
+            return `
+              <div class="p-3 rounded-lg border flex items-center justify-between ${
+                isLabor ? 'bg-orange-50 border-orange-200' :
+                p.code ? 'bg-amber-50/70 border-amber-300' : 'bg-gray-50 border-gray-200 opacity-60'
+              }">
+                <span class="text-xs font-bold ${p.code ? 'text-amber-900' : 'text-gray-500'}">${p.name}</span>
+                ${isLabor ? `
+                  <span class="px-2.5 py-0.5 bg-orange-100 text-orange-800 font-bold text-xs rounded">ពលកម្ម</span>
+                ` : p.code ? `
+                  <div class="text-right">
+                    <span class="inline-block px-2.5 py-0.5 font-extrabold text-xs rounded" style="background-color: ${t ? t.subject_color : '#fed7aa'}; color: ${t ? t.subject_text_color : '#7c2d12'}">
+                      ${t ? t.subject_name : p.code}
+                    </span>
+                    <div class="text-[10px] text-gray-500 mt-0.5">${t ? t.name : p.code} (${p.code})</div>
+                  </div>
+                ` : `
+                  <span class="text-xs text-gray-400 font-medium">គ្មានម៉ោង</span>
+                `}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function generateTeacherGridHTML(teacher, shift) {
@@ -553,11 +1206,11 @@ function renderClassesView(container) {
       <!-- Class Header Banner with Homeroom Edit Button -->
       <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200 flex flex-wrap items-center justify-between gap-4">
         <div class="flex items-center gap-3">
-          <div class="w-14 h-14 rounded-xl bg-blue-600 text-white font-black text-2xl flex items-center justify-center shadow-sm">
+          <div class="w-14 h-14 rounded-xl bg-blue-600 text-white font-black text-2xl flex items-center justify-center shadow-sm shrink-0">
             ${activeClass.id}
           </div>
           <div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
               <h2 class="text-xl font-bold text-gray-900">កាលវិភាគថ្នាក់ ${activeClass.id} (${activeClass.level})</h2>
               <span class="px-2.5 py-0.5 text-xs bg-blue-50 text-blue-700 font-bold rounded-full border border-blue-200">
                 ថ្នាក់ទី ${activeClass.grade}
@@ -567,12 +1220,14 @@ function renderClassesView(container) {
               <span class="flex items-center gap-1.5">
                 👨‍🏫 នាមគ្រូបន្ទុកថ្នាក់ ៖
                 <strong class="text-blue-900 font-bold text-sm">${activeClass.homeroom}</strong>
-                <button
-                  onclick="openEditHomeroomModal('${activeClass.id}')"
-                  class="ml-1 px-2 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-800 text-[11px] font-bold rounded border border-amber-300 transition"
-                >
-                  ✏️ កែនាម
-                </button>
+                ${appState.userRole === 'admin' ? `
+                  <button
+                    onclick="openEditHomeroomModal('${activeClass.id}')"
+                    class="ml-1 px-2 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-800 text-[11px] font-bold rounded border border-amber-300 transition"
+                  >
+                    ✏️ កែនាម
+                  </button>
+                ` : ''}
               </span>
               <span>•</span>
               <span>ម៉ោងសិក្សាសរុប ៖ <strong>${totalClassHours} ម៉ោង/សប្ដាហ៍</strong></span>
@@ -580,45 +1235,73 @@ function renderClassesView(container) {
           </div>
         </div>
 
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
           <button
-            onclick="openEditHomeroomModal('${activeClass.id}')"
-            class="px-3 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-bold shadow-sm transition flex items-center gap-1.5"
+            onclick="shareClassScheduleTelegram('${activeClass.id}')"
+            class="px-3 py-2 bg-sky-500 hover:bg-sky-600 text-white rounded-lg text-sm font-semibold shadow-sm flex items-center gap-1.5 transition"
+            title="ផ្ញើកាលវិភាគថ្នាក់ទៅកាន់ Telegram"
           >
-            ✏️ កែនាមគ្រូបន្ទុកថ្នាក់
+            <span>✈️</span> Telegram
           </button>
           <button
             onclick="printSingleClass('${activeClass.id}')"
-            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold shadow-sm flex items-center gap-1.5 transition"
+            class="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold shadow-sm flex items-center gap-1.5 transition"
           >
-            🖨️ បោះពុម្ពកាលវិភាគថ្នាក់នេះ
+            🖨️ បោះពុម្ព
           </button>
+          ${appState.userRole === 'admin' ? `
+            <button
+              onclick="openEditHomeroomModal('${activeClass.id}')"
+              class="px-3 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-bold shadow-sm transition flex items-center gap-1.5"
+            >
+              ✏️ កែនាមគ្រូ
+            </button>
+          ` : ''}
         </div>
       </div>
 
-      <!-- Class Morning Table -->
-      <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-bold text-blue-900 flex items-center gap-1.5">
-            <span class="w-3 h-3 rounded-full bg-blue-600"></span>
-            កាលវិភាគពេលព្រឹក (Morning) - ថ្នាក់ ${activeClass.id}
-          </h3>
-          <span class="text-xs text-gray-500">ម៉ោង ៧:០០ - ១២:០០</span>
+      <!-- Day Filter Bar -->
+      <div class="bg-white p-3 rounded-xl shadow-sm border border-gray-200 flex items-center justify-between gap-2 flex-wrap">
+        <div class="flex items-center gap-1 overflow-x-auto text-xs py-0.5">
+          <span class="text-xs font-bold text-slate-500 mr-1 hidden sm:inline">📅 ជ្រើសរើសថ្ងៃ ៖</span>
+          <button onclick="setDayFilter('ALL')" class="px-3 py-1 rounded-full border transition ${appState.selectedDay === 'ALL' ? 'bg-blue-600 text-white font-bold' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">ទាំងអស់</button>
+          <button onclick="setDayFilter('TODAY')" class="px-3 py-1 rounded-full border transition ${appState.selectedDay === 'TODAY' ? 'bg-amber-600 text-white font-bold' : 'bg-amber-50 text-amber-700 border-amber-200 font-semibold'}">⚡ ថ្ងៃនេះ</button>
+          ${['ចន្ទ', 'អង្គារ', 'ពុធ', 'ព្រហស្បតិ៍', 'សុក្រ', 'សៅរ៍'].map(d => `
+            <button onclick="setDayFilter('${d}')" class="px-2.5 py-1 rounded-full border transition ${appState.selectedDay === d ? 'bg-blue-600 text-white font-bold' : 'bg-white text-gray-600 hover:bg-gray-100'}">${d}</button>
+          `).join('')}
         </div>
-        ${generateClassShiftTable(activeClass.id, 'morning')}
+        <div class="text-xs text-slate-500 font-semibold">
+          ${appState.selectedDay === 'ALL' ? 'ទិដ្ឋភាពពេញសប្តាហ៍' : `ទិដ្ឋភាពថ្ងៃ${appState.selectedDay}`}
+        </div>
       </div>
 
-      <!-- Class Afternoon Table -->
-      <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-bold text-amber-900 flex items-center gap-1.5">
-            <span class="w-3 h-3 rounded-full bg-amber-500"></span>
-            កាលវិភាគពេលរសៀល (Afternoon) - ថ្នាក់ ${activeClass.id}
-          </h3>
-          <span class="text-xs text-gray-500">ម៉ោង ១៣:០០ - ១៧:០០</span>
+      ${appState.selectedDay !== 'ALL' ? `
+        ${generateClassDailyCardsHTML(activeClass.id, appState.selectedDay)}
+      ` : `
+        <!-- Class Morning Table -->
+        <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-bold text-blue-900 flex items-center gap-1.5">
+              <span class="w-3 h-3 rounded-full bg-blue-600"></span>
+              កាលវិភាគពេលព្រឹក (Morning) - ថ្នាក់ ${activeClass.id}
+            </h3>
+            <span class="text-xs text-gray-500">ម៉ោង ៧:០០ - ១២:០០</span>
+          </div>
+          ${generateClassShiftTable(activeClass.id, 'morning')}
         </div>
-        ${generateClassShiftTable(activeClass.id, 'afternoon')}
-      </div>
+
+        <!-- Class Afternoon Table -->
+        <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-bold text-amber-900 flex items-center gap-1.5">
+              <span class="w-3 h-3 rounded-full bg-amber-500"></span>
+              កាលវិភាគពេលរសៀល (Afternoon) - ថ្នាក់ ${activeClass.id}
+            </h3>
+            <span class="text-xs text-gray-500">ម៉ោង ១៣:០០ - ១៧:០០</span>
+          </div>
+          ${generateClassShiftTable(activeClass.id, 'afternoon')}
+        </div>
+      `}
 
       <!-- Teachers List for this Class -->
       <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
@@ -774,12 +1457,21 @@ function renderSubjectTeachersView(container) {
         </div>
 
         <div class="flex items-center gap-2">
-          <button
-            onclick="openAddSubjectTeacherModal()"
-            class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition flex items-center gap-1.5"
-          >
-            ➕ បន្ថែមគ្រូមុខវិជ្ជាថ្មី
-          </button>
+          ${appState.userRole === 'admin' ? `
+            <button
+              onclick="openAddSubjectTeacherModal()"
+              class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition flex items-center gap-1.5"
+            >
+              ➕ បន្ថែមគ្រូមុខវិជ្ជាថ្មី
+            </button>
+          ` : `
+            <button
+              onclick="openRoleModal('admin')"
+              class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg text-xs font-semibold border border-gray-200 flex items-center gap-1"
+            >
+              🔒 ចូល Admin ដើម្បីបន្ថែមគ្រូ
+            </button>
+          `}
           <button
             onclick="printSubjectTeachersRoster()"
             class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-sm transition flex items-center gap-1.5"
@@ -897,13 +1589,15 @@ function renderSubjectTeachersView(container) {
                 <td class="py-2.5 px-3 text-gray-500 text-xs">${t.note || ''}</td>
                 <td class="py-2.5 px-3 text-center">
                   <div class="flex items-center justify-center gap-1.5">
-                    <button
-                      onclick="openEditTeacherModal('${t.code}')"
-                      class="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded text-xs font-semibold transition"
-                      title="កែប្រែព័ត៌មាន"
-                    >
-                      ✏️ កែ
-                    </button>
+                    ${(appState.userRole === 'admin' || (appState.userRole === 'teacher' && t.code === appState.currentTeacherCode)) ? `
+                      <button
+                        onclick="openEditTeacherModal('${t.code}')"
+                        class="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded text-xs font-semibold transition"
+                        title="កែប្រែព័ត៌មាន"
+                      >
+                        ✏️ កែ
+                      </button>
+                    ` : ''}
                     <button
                       onclick="viewTeacherSchedule('${t.code}')"
                       class="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded text-xs font-semibold transition"
@@ -911,7 +1605,7 @@ function renderSubjectTeachersView(container) {
                     >
                       👁️ កាលវិភាគ
                     </button>
-                    ${t.is_custom ? `
+                    ${(t.is_custom && appState.userRole === 'admin') ? `
                       <button
                         onclick="deleteCustomTeacher('${t.code}')"
                         class="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 rounded text-xs font-semibold transition"
@@ -960,12 +1654,31 @@ function viewTeacherSchedule(code) {
 function renderHomeroomManagerView(container) {
   const classes = appState.data.classes;
   const teachers = appState.data.teachers;
+  const isAdmin = appState.userRole === 'admin';
 
   // Extract list of all teachers for dropdown
   const teacherList = Object.values(teachers).sort((a, b) => a.name.localeCompare(b.name, 'km'));
 
   container.innerHTML = `
     <div class="space-y-5">
+      ${!isAdmin ? `
+        <div class="bg-amber-50 border border-amber-300 p-4 rounded-xl flex items-center justify-between gap-3 flex-wrap shadow-sm">
+          <div class="flex items-center gap-3">
+            <span class="text-3xl">🔒</span>
+            <div>
+              <h4 class="font-bold text-sm text-amber-950">ផ្ទាំងនេះសម្រាប់តែអ្នកគ្រប់គ្រង (Admin)</h4>
+              <p class="text-xs text-amber-800 mt-0.5">ដើម្បីកែនាមគ្រូបន្ទុកថ្នាក់ សូមបញ្ចូលលេខកូដសម្ងាត់ PIN របស់អ្នកគ្រប់គ្រង</p>
+            </div>
+          </div>
+          <button
+            onclick="openRoleModal('admin')"
+            class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-lg shadow-sm transition flex items-center gap-1.5"
+          >
+            🔑 ចូលជា Admin (PIN)
+          </button>
+        </div>
+      ` : ''}
+
       <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 class="text-lg font-bold text-gray-900">គ្រប់គ្រង និងកែនាមគ្រូបន្ទុកថ្នាក់ (Homeroom Teachers Manager)</h2>
@@ -973,12 +1686,14 @@ function renderHomeroomManagerView(container) {
             កែប្រែ ឬចាត់តាំងគ្រូបន្ទុកថ្នាក់សម្រាប់ថ្នាក់នីមួយៗ (១២A ដល់ ៧C)។ ឈ្មោះដែលបានកែប្រែ នឹងត្រូវធ្វើបច្ចុប្បន្នភាពលើកាលវិភាគរួម កាលវិភាគថ្នាក់ និងឯកសារបោះពុម្ពទាំងអស់។
           </p>
         </div>
-        <button
-          onclick="saveAllHomeroomTeachers()"
-          class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg shadow-sm transition flex items-center gap-1.5"
-        >
-          💾 រក្សាទុកឈ្មោះគ្រូបន្ទុកថ្នាក់ទាំងអស់
-        </button>
+        ${isAdmin ? `
+          <button
+            onclick="saveAllHomeroomTeachers()"
+            class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg shadow-sm transition flex items-center gap-1.5"
+          >
+            💾 រក្សាទុកឈ្មោះគ្រូបន្ទុកថ្នាក់ទាំងអស់
+          </button>
+        ` : ''}
       </div>
 
       <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
@@ -1010,27 +1725,36 @@ function renderHomeroomManagerView(container) {
                     type="text"
                     id="hr-input-${cls.id}"
                     value="${cls.homeroom}"
-                    class="w-full text-xs font-bold text-gray-900 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    ${isAdmin ? '' : 'disabled'}
+                    class="w-full text-xs font-bold text-gray-900 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none ${isAdmin ? 'bg-white' : 'bg-gray-100 text-gray-600 cursor-not-allowed'}"
                   />
                 </td>
                 <td class="py-3 px-3">
-                  <select
-                    onchange="applyTeacherToHomeroomInput('${cls.id}', this.value)"
-                    class="w-full text-xs px-2.5 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-700 focus:outline-none"
-                  >
-                    <option value="">-- ជ្រើសរើសគ្រូពីបញ្ជី --</option>
-                    ${teacherList.map(t => `
-                      <option value="${t.name}">${t.name} (${t.code} - ${t.subject_short})</option>
-                    `).join('')}
-                  </select>
+                  ${isAdmin ? `
+                    <select
+                      onchange="applyTeacherToHomeroomInput('${cls.id}', this.value)"
+                      class="w-full text-xs px-2.5 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-700 focus:outline-none"
+                    >
+                      <option value="">-- ជ្រើសរើសគ្រូពីបញ្ជី --</option>
+                      ${teacherList.map(t => `
+                        <option value="${t.name}">${t.name} (${t.code} - ${t.subject_short})</option>
+                      `).join('')}
+                    </select>
+                  ` : `
+                    <span class="text-xs text-gray-400">🔒 ជាប់សោរ</span>
+                  `}
                 </td>
                 <td class="py-3 px-3 text-center">
-                  <button
-                    onclick="saveSingleHomeroom('${cls.id}')"
-                    class="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold rounded text-xs transition"
-                  >
-                    💾 រក្សាទុក
-                  </button>
+                  ${isAdmin ? `
+                    <button
+                      onclick="saveSingleHomeroom('${cls.id}')"
+                      class="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold rounded text-xs transition"
+                    >
+                      💾 រក្សាទុក
+                    </button>
+                  ` : `
+                    <span class="text-xs text-gray-400">🔒</span>
+                  `}
                 </td>
               </tr>
             `).join('')}
