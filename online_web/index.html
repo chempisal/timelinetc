@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="km">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>កាលវិភាគបង្រៀនគ្រូ - កំណែលើបណ្តាញអនឡាញ</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Battambang:wght@400;700&family=Kantumruy+Pro:wght@400;600;700&family=Moul&display=swap">
+  <style>
+    :root {
+      --font-main: 'Kantumruy Pro', system-ui, sans-serif;
+      --font-title: 'Moul', serif;
+      --font-body: 'Battambang', sans-serif;
+    }
+    body { font-family: var(--font-main); background-color: #f8fafc; color: #1e293b; margin: 0; padding: 0; }
+    .font-moul { font-family: var(--font-title); }
+    .font-battambang { font-family: var(--font-body); }
+    .timetable-table { border-collapse: separate; border-spacing: 0; width: 100%; }
+    .timetable-table th, .timetable-table td { border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; text-align: center; padding: 4px 6px; }
+    .timetable-table th:first-child, .timetable-table td:first-child { border-left: 1px solid #cbd5e1; }
+    .timetable-table tr:first-child th { border-top: 1px solid #cbd5e1; }
+    .day-sep-left { border-left: 2px solid #64748b !important; }
+    .cell-slot { cursor: pointer; font-size: 0.85rem; font-weight: 600; min-width: 38px; height: 32px; transition: all 0.15s; }
+    .cell-slot:hover { filter: brightness(0.92); transform: scale(1.04); z-index: 10; }
+    .cell-dimmed { opacity: 0.25 !important; filter: grayscale(80%) !important; }
+    .cell-highlighted { outline: 3px solid #2563eb !important; outline-offset: -2px; font-weight: 800 !important; transform: scale(1.08); z-index: 20; }
+    .labor-cell { background: #ffedd5 !important; color: #9a3412 !important; font-weight: 700; letter-spacing: 2px; }
+    .teacher-slip-card { background: white; border: 1px solid #cbd5e1; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+    @media print {
+      @page { size: A4 portrait; margin: 10mm; }
+      body { background: white !important; color: black !important; font-size: 9pt; }
+      .no-print { display: none !important; }
+      .print-only { display: block !important; }
+      .teacher-slip-card { border: 1px solid #000 !important; border-radius: 0 !important; page-break-inside: avoid; }
+      .page-break { page-break-after: always !important; }
+      .timetable-table th, .timetable-table td { border: 1px solid #000 !important; font-size: 8.5pt !important; color: #000 !important; }
+      .timetable-table th { background-color: #f1f5f9 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .day-sep-left { border-left: 2px solid #000 !important; }
+      .labor-cell { background: #fed7aa !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body class="bg-slate-100 min-h-screen text-slate-800">
+
+  <div id="printable-area" class="hidden print-only"></div>
+
+  <div class="no-print">
+    <header class="bg-white border-b border-slate-200 shadow-sm sticky top-0 z-30">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div class="flex items-center gap-3">
+            <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-blue-700 to-indigo-600 text-white flex items-center justify-center font-black text-2xl shadow-md">
+              🌐
+            </div>
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                  ក្រសួងអប់រំ យុវជន និងកីឡា
+                </span>
+                <span class="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 flex items-center gap-1">
+                  <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> កំណែអនឡាញ (Online Ready)
+                </span>
+              </div>
+              <h1 class="text-lg md:text-xl font-black text-slate-900 tracking-tight mt-0.5">
+                កម្មវិធីបែងចែក និងគ្រប់គ្រងកាលវិភាគបង្រៀនគ្រូ
+              </h1>
+            </div>
+          </div>
+          <div id="quick-stats" class="flex items-center"></div>
+        </div>
+
+        <nav class="flex space-x-1 sm:space-x-2 border-t border-slate-100 mt-3 pt-2 overflow-x-auto text-xs sm:text-sm font-semibold">
+          <button data-tab="teachers" class="tab-btn px-3 py-2 border-b-2 border-blue-600 text-blue-600 bg-blue-50 rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap">
+            <span>👨‍🏫</span> កាលវិភាគគ្រូបង្រៀន
+          </button>
+          <button data-tab="classes" class="tab-btn px-3 py-2 border-b-2 border-transparent text-slate-500 hover:text-slate-800 rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap">
+            <span>🏫</span> កាលវិភាគតាមថ្នាក់រៀន
+          </button>
+          <button data-tab="subject_teachers" class="tab-btn px-3 py-2 border-b-2 border-transparent text-slate-500 hover:text-slate-800 rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap">
+            <span>👥</span> បញ្ជីឈ្មោះគ្រូមុខវិជ្ជា
+          </button>
+          <button data-tab="homeroom_manager" class="tab-btn px-3 py-2 border-b-2 border-transparent text-slate-500 hover:text-slate-800 rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap">
+            <span>🎯</span> កែនាមគ្រូបន្ទុកថ្នាក់
+          </button>
+          <button data-tab="master" class="tab-btn px-3 py-2 border-b-2 border-transparent text-slate-500 hover:text-slate-800 rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap">
+            <span>📋</span> តារាងម៉ោងរួម (Master)
+          </button>
+          <button data-tab="workload" class="tab-btn px-3 py-2 border-b-2 border-transparent text-slate-500 hover:text-slate-800 rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap">
+            <span>📊</span> ស្ថិតិ & បន្ទុកម៉ោង
+          </button>
+          <button data-tab="print_hub" class="tab-btn px-3 py-2 border-b-2 border-transparent text-slate-500 hover:text-slate-800 rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap">
+            <span>🖨️</span> បោះពុម្ព & Excel
+          </button>
+        </nav>
+      </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div id="tab-content"></div>
+    </main>
+
+    <footer class="bg-white border-t border-slate-200 mt-12 py-6 text-center text-xs text-slate-500">
+      <div class="max-w-7xl mx-auto px-4 space-y-1">
+        <p class="font-semibold text-slate-700">កម្មវិធីបែងចែកកាលវិភាគបង្រៀនគ្រូ - កំណែលើបណ្តាញអនឡាញ (Online Ready)</p>
+        <p>ទិន្នន័យត្រូវបានរក្សាទុកជាប់ក្នុង Browser របស់អ្នក (LocalStorage) ដោយស្វ័យប្រវត្តិ</p>
+      </div>
+    </footer>
+  </div>
+
+  <div id="edit-modal"></div>
+
+  <script>
+    const INITIAL_DATA = {"school_info": {"ministry": "ក្រសួងអប់រំ យុវជន និងកីឡា", "province": "មន្ទីរអប់រំ យុវជន និងកីឡា", "school_name": "វិទ្យាល័យ / អនុវិទ្យាល័យ", "academic_year": "២០២៦ - ២០២៧", "effective_date": "ថ្ងៃទី ០២ ខែ វិច្ឆិកា ឆ្នាំ ២០២៦", "lunar_date": "ថ្ងៃ ចន្ទ ៧រោច ខែ អស្សុជ ឆ្នាំ មមី អដ្ឋស័ក ព.ស ២៥៧០"}, "subjects": {"K": {"name": "ភាសាខ្មែរនិងអក្សរសិល្ប៍", "short": "ភាសាខ្មែរ", "color": "#fee2e2", "text_color": "#991b1b", "border": "#f87171"}, "M": {"name": "គណិតវិទ្យា", "short": "គណិតវិទ្យា", "color": "#dbeafe", "text_color": "#1e40af", "border": "#60a5fa"}, "P": {"name": "រូបវិទ្យា", "short": "រូបវិទ្យា", "color": "#e0e7ff", "text_color": "#3730a3", "border": "#818cf8"}, "C": {"name": "គីមីវិទ្យា", "short": "គីមីវិទ្យា", "color": "#fef3c7", "text_color": "#92400e", "border": "#fbbf24"}, "B": {"name": "ជីវវិទ្យា", "short": "ជីវវិទ្យា", "color": "#dcfce7", "text_color": "#166534", "border": "#4ade80"}, "Es": {"name": "ផែនដី-បរិស្ថានវិទ្យា", "short": "ផែនដីវិទ្យា", "color": "#ccfbf1", "text_color": "#115e59", "border": "#2dd4bf"}, "H": {"name": "ប្រវត្តិវិទ្យា", "short": "ប្រវត្តិវិទ្យា", "color": "#ffedd5", "text_color": "#9a3412", "border": "#fb923c"}, "G": {"name": "ភូមិវិទ្យា", "short": "ភូមិវិទ្យា", "color": "#ecfccb", "text_color": "#3f6212", "border": "#a3e635"}, "I": {"name": "សីលធម៌-ពលរដ្ឋវិជ្ជា", "short": "សីលធម៌", "color": "#fae8ff", "text_color": "#86198f", "border": "#e879f9"}, "Ed": {"name": "អប់រំកាយ-កីឡា", "short": "កីឡា", "color": "#f3e8ff", "text_color": "#6b21a8", "border": "#c084fc"}, "En": {"name": "ភាសាអង់គ្លេស", "short": "អង់គ្លេស", "color": "#fce7f3", "text_color": "#9d174d", "border": "#f472b6"}, "Em": {"name": "សេដ្ឋកិច្ច", "short": "សេដ្ឋកិច្ច", "color": "#f1f5f9", "text_color": "#334155", "border": "#94a3b8"}}, "classes": [{"id": "12A", "level": "វិទ្យាល័យ", "grade": 12, "homeroom": "មាយ លីមហ៊ាក"}, {"id": "12B", "level": "វិទ្យាល័យ", "grade": 12, "homeroom": "ពុំ វណ្ណេត"}, {"id": "12C", "level": "វិទ្យាល័យ", "grade": 12, "homeroom": "ហួ សុផានីទ្ធ"}, {"id": "11A", "level": "វិទ្យាល័យ", "grade": 11, "homeroom": "សាយ ពិសិដ្ឋ"}, {"id": "11B", "level": "វិទ្យាល័យ", "grade": 11, "homeroom": "ហាន ឈុនហាក់"}, {"id": "11C", "level": "វិទ្យាល័យ", "grade": 11, "homeroom": "អ៊ុន លីដា"}, {"id": "10A", "level": "វិទ្យាល័យ", "grade": 10, "homeroom": "ខាត់ ចន្ថា"}, {"id": "10B", "level": "វិទ្យាល័យ", "grade": 10, "homeroom": "ឆយ សុភ័ណ្ឌណែត"}, {"id": "10C", "level": "វិទ្យាល័យ", "grade": 10, "homeroom": "គិន សុភា"}, {"id": "9A", "level": "អនុវិទ្យាល័យ", "grade": 9, "homeroom": "ហាស់ សច្ចា"}, {"id": "9B", "level": "អនុវិទ្យាល័យ", "grade": 9, "homeroom": "វ៉ែ ដារ៉ូ"}, {"id": "8A", "level": "អនុវិទ្យាល័យ", "grade": 8, "homeroom": "រង ទី"}, {"id": "8B", "level": "អនុវិទ្យាល័យ", "grade": 8, "homeroom": "ហ៊ឺ ចាត"}, {"id": "8C", "level": "អនុវិទ្យាល័យ", "grade": 8, "homeroom": "ហ៊ុន សុខម៉េង"}, {"id": "7A", "level": "អនុវិទ្យាល័យ", "grade": 7, "homeroom": "ល័ក្ខ ណារី"}, {"id": "7B", "level": "អនុវិទ្យាល័យ", "grade": 7, "homeroom": "ព្រោះ រ៉ែម"}, {"id": "7C", "level": "អនុវិទ្យាល័យ", "grade": 7, "homeroom": "ខេង ស្រីខួច"}], "time_slots": {"morning": [{"day": "ចន្ទ", "day_key": "Mon", "periods": ["7-8", "8-9", "9-10", "10-11", "11-12"]}, {"day": "អង្គារ", "day_key": "Tue", "periods": ["7-8", "8-9", "9-10", "10-11", "11-12"]}, {"day": "ពុធ", "day_key": "Wed", "periods": ["7-8", "8-9", "9-10", "10-11", "11-12"]}, {"day": "ព្រហស្បតិ៍", "day_key": "Thu", "periods": ["7-8", "8-9", "9-10", "10-11", "11-12"]}, {"day": "សុក្រ", "day_key": "Fri", "periods": ["7-8", "8-9", "9-10", "10-11"]}, {"day": "សៅរ៍", "day_key": "Sat", "periods": ["7-8", "8-9", "9-10", "10-11"]}], "afternoon": [{"day": "ចន្ទ", "day_key": "Mon", "periods": ["1-2", "2-3", "3-4", "4-5"]}, {"day": "អង្គារ", "day_key": "Tue", "periods": ["1-2", "2-3", "3-4", "4-5"]}, {"day": "ពុធ", "day_key": "Wed", "periods": ["1-2", "2-3", "3-4", "4-5"]}, {"day": "ព្រហស្បតិ៍", "day_key": "Thu", "periods": ["1-2", "2-3", "3-4", "4-5"]}, {"day": "សុក្រ", "day_key": "Fri", "periods": ["1-2", "2-3", "3-4", "4-5"]}, {"day": "សៅរ៍", "day_key": "Sat", "periods": ["1-2", "2-3", "3-4", "4-5"]}]}, "morning_schedule": {"12A": ["C1", "C1", "Es1", "Es1", "I1", "B2", "B2", "G1", "G1", "", "K1", "K1", "P1", "P1", "", "K1", "K1", "H1", "", "", "I1", "I1", "H1", "H1", "M2", "M2", "En1", "En1"], "12B": ["I1", "I1", "C1", "C1", "", "G1", "G1", "Es1", "Es1", "", "H1", "I1", "K1", "K1", "", "H1", "H1", "M2", "M2", "", "K1", "K1", "G1", "M2", "En1", "En1", "P1", "P1"], "12C": ["K2", "K2", "M1", "M1", "", "Es1", "Es1", "I1", "I1", "K2", "M1", "P1", "C2", "C2", "", "G1", "G1", "B1", "B1", "C2", "En1", "En1", "B1", "", "P1", "P1", "M1", "M1"], "11A": ["M1", "M1", "En1", "En1", "B1", "M1", "M1", "K2", "K2", "P1", "C2", "C2", "Es1", "Es1", "", "B1", "B1", "Em", "Em", "", "H1", "H1", "M1", "", "G1", "G1", "K2", ""], "11B": ["Ed3", "Ed3", "K2", "K2", "P1", "Em", "Em", "H1", "H1", "M1", "Es1", "Es1", "B1", "B1", "C2", "C2", "C2", "I1", "I1", "B1", "M1", "M1", "En1", "En1", "M1", "M1", "G1", "G1"], "11C": ["B1", "B1", "H1", "H1", "", "M3", "M3", "En1", "En1", "C2", "P1", "M3", "Em", "Em", "B1", "Es1", "Es1", "C2", "C2", "", "G1", "G1", "I1", "I1", "K3", "K3", "M3", "M3"], "10A": ["B2", "B2", "K1", "K1", "H1", "En1", "En1", "C1", "C1", "", "M2", "M2", "G1", "G1", "", "I2", "I2", "K1", "K1", "M2", "M2", "M2", "", "", "Ed2", "Ed2", "P2", "P2"], "10B": ["Es1", "Es1", "B2", "B2", "", "C1", "C1", "P1", "P1", "", "K2", "K2", "M2", "M2", "H1", "Ed2", "Ed2", "G1", "G1", "", "K2", "K2", "M2", "", "I2", "I2", "", ""], "10C": ["P1", "P1", "G1", "G1", "", "Ed2", "Ed2", "B2", "B2", "H1", "K3", "K3", "En1", "En1", "M2", "M2", "M2", "K3", "K3", "", "I2", "I2", "K3", "K3", "Es2", "Es2", "M2", "M2"], "9A": ["K1", "K1", "I1", "I1", "", "K1", "K1", "M1", "M1", "Es2", "C1", "C1", "B2", "B2", "", "En1", "En1", "M1", "M1", "H1", "Ed3", "Ed3", "K1", "K1", "G2", "G2", "", ""], "9B": ["I2", "I2", "Ed3", "Ed3", "", "K2", "K2", "M3", "G2", "G2", "B2", "B2", "M3", "M3", "", "M3", "M3", "K2", "K2", "", "C2", "C2", "K2", "K2", "P2", "P2", "Es2", ""], "8A": ["P2", "P2", "G2", "G2", "", "I5", "I5", "K4", "K4", "", "Ed1", "Ed1", "M4", "M4", "", "B2", "B2", "En3", "En3", "", "M4", "M4", "Es2", "", "C2", "C2", "", ""], "8B": ["En3", "En3", "M4", "M4", "", "Ed1", "Ed1", "M4", "K3", "K3", "H3", "Es2", "K3", "K3", "", "M4", "M4", "G2", "G2", "", "P2", "P2", "C2", "C2", "I3", "I3", "K3", "K3"], "8C": ["Ed1", "Ed1", "M3", "M3", "", "K3", "K3", "P2", "En4", "En4", "M3", "H3", "Es2", "", "", "G2", "G2", "P2", "", "", "K3", "K3", "I3", "I3", "M3", "M3", "C2", "C2"], "7A": ["K5", "K5", "B1", "B1", "", "M4", "M4", "K5", "K5", "", "P2", "M4", "H1", "", "", "En4", "En4", "M4", "M4", "", "K5", "K5", "P2", "", "Ed1", "Ed1", "G2", "G2"], "7B": ["G2", "G2", "K5", "K5", "", "K5", "K5", "B1", "B1", "", "M4", "H1", "C1", "C1", "", "K5", "K5", "Ed2", "Ed2", "", "I3", "I3", "M4", "M4", "En4", "En4", "M4", "M4"], "7C": ["M4", "M4", "P2", "P2", "", "H1", "B1", "G2", "", "", "K4", "K4", "G2", "", "", "K4", "K4", "C1", "C1", "", "En4", "En4", "", "", "M4", "M4", "I3", "I3"]}, "afternoon_schedule": {"12A": ["", "K1", "G1", "", "", "M2", "I1", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "12B": ["", "B1", "B1", "K1", "", "", "", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "12C": ["", "H1", "H1", "", "", "", "", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "11A": ["I1", "I1", "C2", "", "Ed3", "Ed3", "P1", "P1", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "11B": ["", "K2", "P1", "P1", "", "", "", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "11C": ["C1", "C1", "Ed3", "Ed3", "P1", "P1", "K3", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "10A": ["", "", "", "", "K1", "K1", "Es1", "Es1", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "10B": ["", "", "K2", "K2", "En1", "En1", "M2", "M2", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "10C": ["", "", "C1", "C1", "", "", "", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "9A": ["P1", "P1", "M1", "", "", "", "", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "9B": ["", "H2", "En2", "En2", "", "En2", "En2", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "8A": ["", "M4", "K4", "K4", "", "K4", "K4", "H3", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "8B": ["", "B2", "B2", "K3", "", "I4", "I4", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "8C": ["", "K3", "K3", "", "", "B2", "B2", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "7A": ["", "Es1", "I3", "I3", "", "C1", "C1", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "7B": ["P2", "P2", "Es1", "", "", "", "", "", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""], "7C": ["K4", "K4", "M4", "Es1", "", "Ed4", "Ed4", "B1", "", "", "", "", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "ពលកម្ម", "", "", "", "", "", "", "", ""]}};
+  </script>
+  <script src="online_app.js"></script>
+</body>
+</html>
