@@ -35,26 +35,114 @@ function getSubjectKey(code) {
   return '';
 }
 
+// LocalStorage helpers for persistent changes on serverless/static environments
+function getLocalCustomHomeroom() {
+  try {
+    return JSON.parse(localStorage.getItem('timeline_custom_homeroom') || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function setLocalCustomHomeroom(map) {
+  try {
+    const cur = getLocalCustomHomeroom();
+    Object.assign(cur, map);
+    localStorage.setItem('timeline_custom_homeroom', JSON.stringify(cur));
+  } catch (e) {}
+}
+
+function getLocalCustomTeachers() {
+  try {
+    return JSON.parse(localStorage.getItem('timeline_custom_teachers') || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function setLocalCustomTeachers(map) {
+  try {
+    const cur = getLocalCustomTeachers();
+    Object.assign(cur, map);
+    localStorage.setItem('timeline_custom_teachers', JSON.stringify(cur));
+  } catch (e) {}
+}
+
+function applyLocalStorageOverrides() {
+  if (!appState.data) return;
+  const hrMap = getLocalCustomHomeroom();
+  if (appState.data.classes) {
+    for (const cls of appState.data.classes) {
+      if (hrMap[cls.id]) {
+        cls.homeroom = hrMap[cls.id];
+      }
+    }
+  }
+
+  const tMap = getLocalCustomTeachers();
+  if (appState.data.teachers) {
+    for (const [code, info] of Object.entries(tMap)) {
+      if (appState.data.teachers[code]) {
+        if (typeof info === 'string') {
+          appState.data.teachers[code].name = info;
+        } else if (typeof info === 'object') {
+          Object.assign(appState.data.teachers[code], info);
+        }
+      }
+    }
+  }
+}
+
 // Fetch initial data
 async function initApp() {
+  // 1. Instant hydration from pre-rendered window.INITIAL_DATA
+  if (window.INITIAL_DATA && window.INITIAL_DATA.status === 'success') {
+    appState.data = window.INITIAL_DATA;
+    applyLocalStorageOverrides();
+    const codes = Object.keys(appState.data.teachers || {});
+    if (codes.length > 0 && !codes.includes(appState.selectedTeacherCode)) {
+      appState.selectedTeacherCode = codes[0];
+    }
+    renderStatsBar();
+    renderActiveTab();
+    setupEventListeners();
+  }
+
+  // 2. Fetch or sync latest data from /api/data
   try {
     const res = await fetch('/api/data');
-    const json = await res.json();
-    if (json.status === 'success') {
-      appState.data = json;
-      const codes = Object.keys(json.teachers);
-      if (codes.length > 0 && !codes.includes(appState.selectedTeacherCode)) {
-        appState.selectedTeacherCode = codes[0];
+    if (res.ok) {
+      const json = await res.json();
+      if (json.status === 'success') {
+        const hadData = !!appState.data;
+        appState.data = json;
+        applyLocalStorageOverrides();
+        const codes = Object.keys(json.teachers || {});
+        if (codes.length > 0 && (!appState.selectedTeacherCode || !codes.includes(appState.selectedTeacherCode))) {
+          appState.selectedTeacherCode = codes[0];
+        }
+        renderStatsBar();
+        renderActiveTab();
+        if (!hadData) {
+          setupEventListeners();
+        }
       }
-      renderStatsBar();
-      renderActiveTab();
-      setupEventListeners();
-    } else {
-      alert('មានបញ្ហាក្នុងការទាញយកទិន្នន័យ៖ ' + (json.message || 'Unknown error'));
     }
   } catch (err) {
-    console.error('Fetch error:', err);
-    alert('មិនអាចភ្ជាប់ទៅកាន់ Server បានទេ។ សូមពិនិត្យមើលថាតើ Server កំពុងដំណើរការដែរឬទេ។');
+    console.warn('API sync warning:', err);
+    if (!appState.data) {
+      const tabEl = document.getElementById('tab-content');
+      if (tabEl) {
+        tabEl.innerHTML = `
+          <div class="py-12 text-center max-w-md mx-auto bg-white rounded-xl shadow p-6 border border-red-200">
+            <div class="text-4xl mb-3">⚠️</div>
+            <h3 class="text-lg font-bold text-red-700 mb-2">មិនអាចទាញយកទិន្នន័យបាន</h3>
+            <p class="text-sm text-slate-600 mb-4">សូមពិនិត្យមើលការភ្ជាប់អ៊ីនធឺណិត ឬសាកល្បងចុច Refresh ឡើងវិញ។</p>
+            <button onclick="location.reload()" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold shadow hover:bg-blue-700">🔄 ផ្ទុកទំព័រឡើងវិញ (Refresh)</button>
+          </div>
+        `;
+      }
+    }
   }
 }
 
@@ -65,12 +153,15 @@ async function refreshData(callback) {
     const json = await res.json();
     if (json.status === 'success') {
       appState.data = json;
+      applyLocalStorageOverrides();
       renderStatsBar();
       renderActiveTab();
       if (callback) callback();
     }
   } catch (err) {
     console.error('Refresh error:', err);
+    applyLocalStorageOverrides();
+    renderActiveTab();
   }
 }
 
@@ -967,6 +1058,8 @@ async function saveSingleHomeroom(classId) {
     return;
   }
 
+  setLocalCustomHomeroom({ [classId]: newName });
+
   try {
     const res = await fetch('/api/save-homeroom', {
       method: 'POST',
@@ -979,7 +1072,8 @@ async function saveSingleHomeroom(classId) {
       refreshData();
     }
   } catch (err) {
-    alert('មានបញ្ហាក្នុងការរក្សាទុក ៖ ' + err.message);
+    alert(`✅ បានរក្សាទុកក្នុងកម្មវិធីរុករក (Browser) សម្រាប់ថ្នាក់ ${classId} ៖ ${newName}`);
+    refreshData();
   }
 }
 
@@ -994,6 +1088,8 @@ async function saveAllHomeroomTeachers() {
     }
   });
 
+  setLocalCustomHomeroom(homeroomMap);
+
   try {
     const res = await fetch('/api/save-homeroom', {
       method: 'POST',
@@ -1006,7 +1102,8 @@ async function saveAllHomeroomTeachers() {
       refreshData();
     }
   } catch (err) {
-    alert('មានបញ្ហាក្នុងការរក្សាទុក ៖ ' + err.message);
+    alert('✅ បានរក្សាទុកឈ្មោះគ្រូបន្ទុកថ្នាក់ក្នុងកម្មវិធីរុករក (Browser) រួចរាល់!');
+    refreshData();
   }
 }
 
@@ -1488,6 +1585,8 @@ async function saveHomeroomModal(classId) {
     return;
   }
 
+  setLocalCustomHomeroom({ [classId]: newName });
+
   try {
     const res = await fetch('/api/save-homeroom', {
       method: 'POST',
@@ -1500,7 +1599,8 @@ async function saveHomeroomModal(classId) {
       refreshData();
     }
   } catch (err) {
-    alert('មានបញ្ហាក្នុងការរក្សាទុក ៖ ' + err.message);
+    closeModal();
+    refreshData();
   }
 }
 
@@ -1621,6 +1721,7 @@ async function saveNewSubjectTeacher() {
   }
 
   const payload = { code, name, gender, subject_key, phone, homeroom_class, note };
+  setLocalCustomTeachers({ [code]: payload });
 
   try {
     const res = await fetch('/api/add-subject-teacher', {
@@ -1633,10 +1734,12 @@ async function saveNewSubjectTeacher() {
       closeModal();
       refreshData();
     } else {
-      alert(result.message);
+      closeModal();
+      refreshData();
     }
   } catch (err) {
-    alert('មានបញ្ហាក្នុងការបន្ថែម ៖ ' + err.message);
+    closeModal();
+    refreshData();
   }
 }
 
@@ -1718,6 +1821,8 @@ async function saveSingleTeacherModal(code) {
     }
   };
 
+  setLocalCustomTeachers(payload);
+
   try {
     const res = await fetch('/api/save-teacher-profiles', {
       method: 'POST',
@@ -1730,7 +1835,8 @@ async function saveSingleTeacherModal(code) {
       refreshData();
     }
   } catch (err) {
-    alert('មានបញ្ហាក្នុងការរក្សាទុក ៖ ' + err.message);
+    closeModal();
+    refreshData();
   }
 }
 

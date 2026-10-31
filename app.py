@@ -7,7 +7,7 @@ import os
 import sys
 import json
 from collections import defaultdict
-from flask import Flask, render_template, jsonify, request, send_file, Response
+from flask import Flask, render_template, jsonify, request, send_file, Response, send_from_directory
 from excel_exporter import create_styled_excel
 
 # Reconfigure stdout for utf-8 on Windows
@@ -37,6 +37,13 @@ def load_data():
     return data
 
 def load_custom_homeroom():
+    tmp_path = os.path.join('/tmp', 'custom_homeroom.json')
+    if os.path.exists(tmp_path):
+        try:
+            with open(tmp_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
     if os.path.exists(CUSTOM_HOMEROOM_FILE):
         try:
             with open(CUSTOM_HOMEROOM_FILE, 'r', encoding='utf-8') as f:
@@ -48,10 +55,25 @@ def load_custom_homeroom():
 def save_custom_homeroom(homeroom_map):
     current = load_custom_homeroom()
     current.update(homeroom_map)
-    with open(CUSTOM_HOMEROOM_FILE, 'w', encoding='utf-8') as f:
-        json.dump(current, f, ensure_ascii=False, indent=2)
+    try:
+        with open(CUSTOM_HOMEROOM_FILE, 'w', encoding='utf-8') as f:
+            json.dump(current, f, ensure_ascii=False, indent=2)
+    except (OSError, IOError, PermissionError):
+        try:
+            tmp_path = os.path.join('/tmp', 'custom_homeroom.json')
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(current, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
 def load_custom_teachers():
+    tmp_path = os.path.join('/tmp', 'custom_teachers.json')
+    if os.path.exists(tmp_path):
+        try:
+            with open(tmp_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
     if os.path.exists(CUSTOM_TEACHERS_FILE):
         try:
             with open(CUSTOM_TEACHERS_FILE, 'r', encoding='utf-8') as f:
@@ -63,8 +85,16 @@ def load_custom_teachers():
 def save_custom_teachers(teachers_map):
     current = load_custom_teachers()
     current.update(teachers_map)
-    with open(CUSTOM_TEACHERS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(current, f, ensure_ascii=False, indent=2)
+    try:
+        with open(CUSTOM_TEACHERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(current, f, ensure_ascii=False, indent=2)
+    except (OSError, IOError, PermissionError):
+        try:
+            tmp_path = os.path.join('/tmp', 'custom_teachers.json')
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(current, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
 def calculate_teacher_details(data, custom_teachers):
     """
@@ -280,7 +310,52 @@ def check_conflicts(data):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    try:
+        data = load_data()
+        custom_teachers = load_custom_teachers()
+        teachers = calculate_teacher_details(data, custom_teachers)
+        conflicts = check_conflicts(data)
+
+        total_m_hours = sum(t['morning_hours'] for t in teachers.values())
+        total_a_hours = sum(t['afternoon_hours'] for t in teachers.values())
+
+        initial_payload = {
+            'status': 'success',
+            'school_info': data.get('school_info', {}),
+            'subjects': data.get('subjects', {}),
+            'classes': data.get('classes', []),
+            'time_slots': data.get('time_slots', {}),
+            'morning_schedule': data.get('morning_schedule', {}),
+            'afternoon_schedule': data.get('afternoon_schedule', {}),
+            'teachers': teachers,
+            'conflicts': conflicts,
+            'stats': {
+                'total_teachers': len(teachers),
+                'total_classes': len(data.get('classes', [])),
+                'morning_hours_total': total_m_hours,
+                'afternoon_hours_total': total_a_hours,
+                'all_hours_total': total_m_hours + total_a_hours,
+                'conflicts_count': len(conflicts)
+            }
+        }
+        initial_json = json.dumps(initial_payload, ensure_ascii=False)
+    except Exception as e:
+        print("Error preparing initial data:", e)
+        initial_json = 'null'
+
+    return render_template('index.html', initial_data=initial_json)
+
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    return send_from_directory(os.path.join(BASE_DIR, 'static'), filename)
+
+@app.route('/api/app.js')
+def serve_api_app_js():
+    return send_from_directory(os.path.join(BASE_DIR, 'static', 'js'), 'app.js', mimetype='application/javascript')
+
+@app.route('/api/styles.css')
+def serve_api_styles_css():
+    return send_from_directory(os.path.join(BASE_DIR, 'static', 'css'), 'styles.css', mimetype='text/css')
 
 @app.route('/api/data')
 def get_data():
