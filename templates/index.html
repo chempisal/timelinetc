@@ -202,11 +202,11 @@
                 <button
                   id="cloud-sync-btn"
                   onclick="openCloudModal()"
-                  class="text-[10px] sm:text-xs font-bold text-sky-700 bg-sky-50 hover:bg-sky-100 px-1.5 py-0.5 rounded border border-sky-200 flex items-center gap-1 transition"
-                  title="ស្ថានភាព Cloud Database រួមគ្នា"
+                  class="text-[10px] sm:text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-200 flex items-center gap-1 transition"
+                  title="Google Sheets Database រួមគ្នា"
                 >
-                  <span>☁️</span>
-                  <span id="cloud-sync-text">Cloud Sync</span>
+                  <span>📊</span>
+                  <span id="cloud-sync-text">Google Sheets</span>
                 </button>
               </div>
               <h1 class="text-sm sm:text-lg font-black text-slate-900 tracking-tight truncate mt-0.5">
@@ -280,6 +280,13 @@
             <span>🎯</span> កែនាមគ្រូបន្ទុកថ្នាក់
           </button>
           <button
+            data-tab="scheduler"
+            id="tab-btn-scheduler"
+            class="tab-btn px-3 py-2 border-b-2 border-transparent text-slate-500 hover:text-slate-800 rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <span>🛠️</span> រៀបចំកាលវិភាគ
+          </button>
+          <button
             data-tab="master"
             class="tab-btn px-3 py-2 border-b-2 border-transparent text-slate-500 hover:text-slate-800 rounded-t-lg transition flex items-center gap-1.5 whitespace-nowrap"
           >
@@ -335,6 +342,13 @@
       >
         <span class="text-xl">🏫</span>
         <span class="text-[10px] mt-0.5">តាមថ្នាក់</span>
+      </button>
+      <button
+        data-tab="scheduler"
+        class="tab-btn flex flex-col items-center py-1 px-2 text-slate-500 font-semibold transition active:scale-95"
+      >
+        <span class="text-xl">🛠️</span>
+        <span class="text-[10px] mt-0.5">រៀបចំ</span>
       </button>
       <button
         data-tab="master"

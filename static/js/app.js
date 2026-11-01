@@ -28,7 +28,15 @@ let appState = {
   currentTeacherCode: '',
   adminPin: '',
   selectedDay: 'ALL', // 'ALL', 'TODAY', 'ចន្ទ', 'អង្គារ', 'ពុធ', 'ព្រហស្បតិ៍', 'សុក្រ', 'សៅរ៍'
-  isOnline: navigator.onLine
+  isOnline: navigator.onLine,
+  // Timetable Scheduler State (រៀបចំកាលវិភាគ)
+  schedulerMode: 'class', // 'class' or 'teacher'
+  schedulerShift: 'morning', // 'morning' or 'afternoon'
+  schedulerClassId: '12A',
+  schedulerTeacherCode: 'I3',
+  schedulerSwapFirstSlot: null, // null or { shift, classId, slotIndex, dayLabel, periodLabel, teacherCode }
+  schedulerTeacherSearch: '',
+  schedulerSubjectFilter: 'ALL'
 };
 
 const PREFIX_MAP = ['Ed', 'En', 'Es', 'Em', 'K', 'M', 'P', 'C', 'B', 'H', 'G', 'I'];
@@ -41,62 +49,25 @@ function getSubjectKey(code) {
   return '';
 }
 
-// LocalStorage helpers for persistent changes on serverless/static environments
+// Cloud Database is the Single Source of Truth (ទិន្នន័យរួមគ្នាតែមួយពី Online Database)
 function getLocalCustomHomeroom() {
-  try {
-    return JSON.parse(localStorage.getItem('timeline_custom_homeroom') || '{}');
-  } catch (e) {
-    return {};
-  }
+  return {};
 }
 
 function setLocalCustomHomeroom(map) {
-  try {
-    const cur = getLocalCustomHomeroom();
-    Object.assign(cur, map);
-    localStorage.setItem('timeline_custom_homeroom', JSON.stringify(cur));
-  } catch (e) {}
+  // Deprecated: Database in source code is authoritative
 }
 
 function getLocalCustomTeachers() {
-  try {
-    return JSON.parse(localStorage.getItem('timeline_custom_teachers') || '{}');
-  } catch (e) {
-    return {};
-  }
+  return {};
 }
 
 function setLocalCustomTeachers(map) {
-  try {
-    const cur = getLocalCustomTeachers();
-    Object.assign(cur, map);
-    localStorage.setItem('timeline_custom_teachers', JSON.stringify(cur));
-  } catch (e) {}
+  // Deprecated: Database in source code is authoritative
 }
 
 function applyLocalStorageOverrides() {
-  if (!appState.data) return;
-  const hrMap = getLocalCustomHomeroom();
-  if (appState.data.classes) {
-    for (const cls of appState.data.classes) {
-      if (hrMap[cls.id]) {
-        cls.homeroom = hrMap[cls.id];
-      }
-    }
-  }
-
-  const tMap = getLocalCustomTeachers();
-  if (appState.data.teachers) {
-    for (const [code, info] of Object.entries(tMap)) {
-      if (appState.data.teachers[code]) {
-        if (typeof info === 'string') {
-          appState.data.teachers[code].name = info;
-        } else if (typeof info === 'object') {
-          Object.assign(appState.data.teachers[code], info);
-        }
-      }
-    }
-  }
+  // Deprecated: No local storage overrides. All devices share the unified cloud database.
 }
 
 // -------------------------------------------------------------
@@ -156,6 +127,15 @@ function updateRoleUI() {
       homeroomTabBtn.innerHTML = `<span>🎯</span> <span>កែនាមគ្រូ</span> <span class="text-[10px] text-amber-500">🔒</span>`;
     } else {
       homeroomTabBtn.innerHTML = `<span>🎯</span> <span>កែនាមគ្រូបន្ទុកថ្នាក់</span>`;
+    }
+  }
+
+  const schedulerTabBtn = document.getElementById('tab-btn-scheduler');
+  if (schedulerTabBtn) {
+    if (appState.userRole !== 'admin') {
+      schedulerTabBtn.innerHTML = `<span>🛠️</span> <span>រៀបចំកាលវិភាគ</span> <span class="text-[10px] text-amber-500">🔒</span>`;
+    } else {
+      schedulerTabBtn.innerHTML = `<span>🛠️</span> <span>រៀបចំកាលវិភាគ</span>`;
     }
   }
 }
@@ -515,25 +495,28 @@ window.addEventListener('offline', () => updateOnlineStatus(false));
 // -------------------------------------------------------------
 // CLOUD DATABASE & REALTIME AUTO-SYNC (សមកាលកម្ម Cloud DB ស្វ័យប្រវត្តិ)
 // -------------------------------------------------------------
+// GOOGLE SHEETS & CLOUD REALTIME AUTO-SYNC
+// -------------------------------------------------------------
 async function checkCloudStatus() {
   try {
-    const res = await fetch('/api/cloud/status');
+    const res = await fetch('/api/google-sheets/status');
     const json = await res.json();
     if (json.status === 'success') {
-      appState.cloudProvider = json.provider;
+      appState.googleSheetsConfigured = json.is_configured;
       const el = document.getElementById('cloud-sync-text');
+      const btn = document.getElementById('cloud-sync-btn');
       if (el) {
-        if (json.has_vercel_kv) {
-          el.textContent = "Cloud: Vercel KV";
-        } else if (json.firebase_url) {
-          el.textContent = "Cloud: Firebase";
+        if (json.is_configured) {
+          el.textContent = "Google Sheets (ON)";
+          if (btn) btn.className = "text-[10px] sm:text-xs font-bold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 px-1.5 py-0.5 rounded border border-emerald-300 flex items-center gap-1 transition";
         } else {
-          el.textContent = "Cloud Sync";
+          el.textContent = "Google Sheets";
+          if (btn) btn.className = "text-[10px] sm:text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 px-1.5 py-0.5 rounded border border-slate-300 flex items-center gap-1 transition";
         }
       }
     }
   } catch (e) {
-    console.warn("Could not check cloud status:", e);
+    console.warn("Could not check Google Sheets status:", e);
   }
 }
 
@@ -546,10 +529,13 @@ async function silentCloudSync() {
     if (res.ok) {
       const json = await res.json();
       if (json.status === 'success') {
-        appState.data = json;
-        applyLocalStorageOverrides();
-        renderStatsBar();
-        renderActiveTab();
+        const curCloudTime = appState.data ? (appState.data.cloud_updated_at || '') : '';
+        const newCloudTime = json.cloud_updated_at || '';
+        if (newCloudTime !== curCloudTime || !curCloudTime) {
+          appState.data = json;
+          renderStatsBar();
+          renderActiveTab();
+        }
       }
     }
   } catch (e) {
@@ -569,7 +555,6 @@ async function manualCloudSync() {
     const json = await res.json();
     if (json.status === 'success') {
       appState.data = json;
-      applyLocalStorageOverrides();
       renderStatsBar();
       renderActiveTab();
       showToast("✅ បានទាញយកទិន្នន័យចុងក្រោយពី Cloud Database ដោយជោគជ័យ!");
@@ -601,106 +586,140 @@ function showToast(msg) {
   }, 2500);
 }
 
-// Cloud Database Management Modal
+// Google Sheets Database Management Modal
 async function openCloudModal() {
   const modal = document.getElementById('cloud-modal');
   if (!modal) return;
 
   modal.className = "fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto";
   modal.innerHTML = `
-    <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-5 sm:p-6 space-y-4 my-auto border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-xl w-full p-5 sm:p-6 space-y-4 my-auto border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
       <div class="flex justify-between items-center border-b pb-3">
         <div class="flex items-center gap-2.5">
-          <span class="w-9 h-9 rounded-xl bg-sky-100 text-sky-700 flex items-center justify-center text-xl font-bold">☁️</span>
+          <span class="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center text-xl font-bold">📊</span>
           <div>
-            <h3 class="font-bold text-base text-gray-900">Cloud Database រួមគ្នានៅលើអនឡាញ</h3>
-            <p class="text-[11px] text-gray-500">សមកាលកម្មទិន្នន័យកាលវិភាគស្វ័យប្រវត្តិតាមរយៈ Cloud</p>
+            <h3 class="font-bold text-base text-gray-900">Google Sheets Database (ប្រព័ន្ធទិន្នន័យ Google Sheet)</h3>
+            <p class="text-[11px] text-gray-500">ប្រើប្រាស់ Google Sheet ផ្ទាល់ខ្លួនជា Database រួមគ្នាតាមអនឡាញ (Single Source of Truth)</p>
           </div>
         </div>
         <button onclick="closeCloudModal()" class="text-gray-400 hover:text-gray-600 font-bold text-xl px-2">✕</button>
       </div>
 
-      <!-- Cloud Status Box -->
-      <div id="cloud-modal-status-box" class="p-3.5 bg-sky-50 border border-sky-200 rounded-xl space-y-1.5 text-xs">
-        <div class="flex items-center justify-between">
-          <span class="font-bold text-sky-900">ស្ថានភាព Cloud Database ៖</span>
-          <span id="cloud-modal-provider-badge" class="px-2.5 py-0.5 rounded-full font-bold bg-sky-200 text-sky-800 text-[11px]">
-            កំពុងពិនិត្យ...
-          </span>
+      <!-- Status Banner -->
+      <div id="gs-status-banner" class="p-3.5 rounded-xl border flex items-center justify-between text-xs bg-slate-50 border-slate-200">
+        <div class="flex items-center gap-2">
+          <span id="gs-status-dot" class="w-2.5 h-2.5 rounded-full bg-slate-400"></span>
+          <span id="gs-status-title" class="font-bold text-slate-700">កំពុងពិនិត្យស្ថានភាព...</span>
         </div>
-        <div class="text-slate-600 flex items-center justify-between">
-          <span>សមកាលកម្មស្វ័យប្រវត្តិ (Auto-sync) ៖</span>
-          <span class="font-bold text-emerald-600">🟢 បើកដំណើរការរៀងរាល់ 30 វិនាទី</span>
-        </div>
+        <span id="gs-status-badge" class="px-2.5 py-0.5 rounded-full font-bold text-[11px] bg-slate-200 text-slate-700">ពិនិត្យ</span>
       </div>
 
-      <!-- Cloud Configuration Options for Admin -->
-      <div class="space-y-3">
-        <div class="border border-slate-200 rounded-xl p-3.5 space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="font-bold text-xs text-slate-800">🔥 ជម្រើសទី១ ៖ Google Firebase Realtime Database (100% ឥតគិតថ្លៃ)</span>
-            <span class="text-[10px] text-emerald-600 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">ណែនាំ</span>
-          </div>
-          <p class="text-[11px] text-slate-500">គ្រាន់តែបង្កើត Database ដោយឥតគិតថ្លៃនៅ <strong>console.firebase.google.com</strong> រួចចម្លង Database URL មកបិទភ្ជាប់ត្រង់នេះ ៖</p>
+      <!-- URL Input Box -->
+      <div class="space-y-2 border border-slate-200 rounded-xl p-3.5 bg-slate-50/50">
+        <label class="block font-bold text-xs text-slate-800">
+          🔗 Google Apps Script Web App URL ៖
+        </label>
+        <div class="flex gap-2">
           <input
             type="url"
-            id="cfg-firebase-url"
-            placeholder="https://your-project-default-rtdb.firebaseio.com"
-            class="w-full text-xs border border-slate-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
+            id="cfg-gs-url"
+            placeholder="https://script.google.com/macros/s/.../exec"
+            class="flex-1 text-xs border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500 bg-white font-mono"
           />
-        </div>
-
-        <div class="border border-slate-200 rounded-xl p-3.5 space-y-1.5">
-          <div class="flex items-center justify-between">
-            <span class="font-bold text-xs text-slate-800">⚡ ជម្រើសទី២ ៖ Vercel KV (Redis Cloud Storage)</span>
-            <span class="text-[10px] text-blue-600 font-semibold bg-blue-50 px-2 py-0.5 rounded border border-blue-200">ស្វ័យប្រវត្តិតាម Vercel</span>
-          </div>
-          <p class="text-[11px] text-slate-500">នៅក្នុងផ្ទាំង Vercel Dashboard គម្រោង <strong>timelinetc</strong> -> ចុចលើផ្ទាំង <strong>«Storage»</strong> -> បង្កើត <strong>«KV»</strong> រួចភ្ជាប់ទៅកាន់ Project នោះ Vercel នឹងភ្ជាប់ Database ឱ្យដោយស្វ័យប្រវត្តិ!</p>
-        </div>
-      </div>
-
-      <!-- Actions -->
-      <div class="pt-2 border-t flex flex-wrap justify-between items-center gap-2 text-xs">
-        <div class="flex gap-2">
-          <button onclick="testCloudConnectionInModal()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg border border-slate-300 transition">
-            🔌 តេស្តការតភ្ជាប់
-          </button>
-          <button onclick="saveCloudConfigFromModal()" class="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-sm transition">
+          <button
+            onclick="saveGoogleSheetsUrl()"
+            class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shrink-0 shadow-sm transition"
+          >
             💾 រក្សាទុក URL
           </button>
         </div>
-        <div class="flex gap-2">
-          <button onclick="pushDataToCloudFromModal()" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg shadow-sm transition flex items-center gap-1">
-            <span>☁️</span> Push ទៅ Cloud
+        <div class="flex flex-wrap items-center gap-2 pt-1">
+          <button
+            onclick="testGoogleSheetsConnection()"
+            class="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-bold border border-slate-300 transition flex items-center gap-1"
+          >
+            🔌 តេស្តការតភ្ជាប់
           </button>
-          <button onclick="closeCloudModal()" class="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg font-bold">
-            បិទ
+          <button
+            onclick="syncInitialDataToGoogleSheets()"
+            class="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-bold border border-blue-200 transition flex items-center gap-1"
+          >
+            📤 Push ទិន្នន័យដំបូងទៅ Sheet
+          </button>
+          <button
+            onclick="manualCloudSync(); closeCloudModal();"
+            class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition flex items-center gap-1"
+          >
+            🔄 Sync ភ្លាមៗ
           </button>
         </div>
+      </div>
+
+      <!-- Quick 5-step Guide with Copy Button -->
+      <div class="border border-emerald-200 rounded-xl p-3.5 bg-emerald-50/40 text-xs space-y-2.5">
+        <div class="flex items-center justify-between">
+          <span class="font-bold text-emerald-950 flex items-center gap-1.5">
+            <span>📝</span> <span>របៀបបង្កើត Google Sheet ធ្វើជា Database (ងាយស្រួលត្រឹម ១ នាទី)</span>
+          </span>
+          <button
+            onclick="copyAppsScriptCode()"
+            id="btn-copy-script"
+            class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-[11px] shadow-sm transition flex items-center gap-1"
+          >
+            <span>📋</span> <span>ចម្លងកូដ Apps Script</span>
+          </button>
+        </div>
+        <ol class="list-decimal list-inside space-y-1 text-slate-700 text-[11px] leading-relaxed">
+          <li>បើកបង្កើត Google Sheet ថ្មីមួយនៅ <a href="https://sheets.new" target="_blank" class="text-blue-600 underline font-bold">sheets.new</a> (ដាក់ឈ្មោះ <strong>«កាលវិភាគបង្រៀន»</strong>)</li>
+          <li>ចុចម៉ឺនុយ <strong>Extensions (ផ្នែកបន្ថែម)</strong> -> ជ្រើសរើស <strong>Apps Script</strong></li>
+          <li>លុបកូដចាស់ចោល រួចចុចប៊ូតុង <strong>«ចម្លងកូដ Apps Script»</strong> ខាងលើនេះយកទៅ Paste ចូល</li>
+          <li>ចុចប៊ូតុង <strong>Deploy (ដាក់ឱ្យប្រើ)</strong> -> <strong>New deployment</strong> -> ជ្រើសរើសប្រភេទ <strong>Web app</strong> ៖
+            <ul class="list-disc list-inside ml-4 mt-0.5 text-slate-600">
+              <li>Execute as: <strong>Me (ខ្ញុំ)</strong></li>
+              <li>Who has access: <strong>Anyone (អ្នកណាដែលមានតំណភ្ជាប់)</strong></li>
+            </ul>
+          </li>
+          <li>ចុច <strong>Deploy</strong> រួច Copy យក <strong>Web app URL</strong> មកបិទភ្ជាប់ (Paste) ក្នុងប្រអប់ខាងលើ ហើយចុច <strong>«រក្សាទុក URL»</strong> ជាការស្រេច!</li>
+        </ol>
+      </div>
+
+      <div class="flex justify-end pt-2 border-t">
+        <button onclick="closeCloudModal()" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-lg text-xs transition">
+          បិទ
+        </button>
       </div>
     </div>
   `;
 
-  // Fetch current config into input
+  // Fetch current config into input and update status
   try {
-    const res = await fetch('/api/cloud/status');
+    const res = await fetch('/api/google-sheets/status');
     const json = await res.json();
     if (json.status === 'success') {
-      const input = document.getElementById('cfg-firebase-url');
-      if (input && json.firebase_url) input.value = json.firebase_url;
+      const input = document.getElementById('cfg-gs-url');
+      if (input && json.web_app_url) input.value = json.web_app_url;
 
-      const badge = document.getElementById('cloud-modal-provider-badge');
-      if (badge) {
-        if (json.has_vercel_kv) {
-          badge.textContent = "Vercel KV (បានភ្ជាប់)";
-          badge.className = "px-2.5 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-800 text-[11px]";
-        } else if (json.firebase_url) {
-          badge.textContent = "Google Firebase (បានកំណត់)";
-          badge.className = "px-2.5 py-0.5 rounded-full font-bold bg-blue-100 text-blue-800 text-[11px]";
-        } else {
-          badge.textContent = "Local Storage (មិនទាន់ភ្ជាប់ Cloud)";
-          badge.className = "px-2.5 py-0.5 rounded-full font-bold bg-slate-200 text-slate-700 text-[11px]";
+      const dot = document.getElementById('gs-status-dot');
+      const title = document.getElementById('gs-status-title');
+      const badge = document.getElementById('gs-status-badge');
+      const banner = document.getElementById('gs-status-banner');
+
+      if (json.is_configured) {
+        if (dot) dot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse";
+        if (title) title.textContent = "🟢 បានតភ្ជាប់ទៅកាន់ Google Sheets Database រួចរាល់";
+        if (badge) {
+          badge.textContent = "ភ្ជាប់ជោគជ័យ";
+          badge.className = "px-2.5 py-0.5 rounded-full font-bold text-[11px] bg-emerald-100 text-emerald-800 border border-emerald-300";
         }
+        if (banner) banner.className = "p-3.5 rounded-xl border flex items-center justify-between text-xs bg-emerald-50 border-emerald-200";
+      } else {
+        if (dot) dot.className = "w-2.5 h-2.5 rounded-full bg-amber-400";
+        if (title) title.textContent = "⚪ មិនទាន់ភ្ជាប់ Google Sheets (កំពុងប្រើ Backup Database ក្នុង Source Code)";
+        if (badge) {
+          badge.textContent = "មិនទាន់ភ្ជាប់";
+          badge.className = "px-2.5 py-0.5 rounded-full font-bold text-[11px] bg-amber-100 text-amber-800 border border-amber-300";
+        }
+        if (banner) banner.className = "p-3.5 rounded-xl border flex items-center justify-between text-xs bg-amber-50 border-amber-200";
       }
     }
   } catch (e) {}
@@ -714,56 +733,106 @@ function closeCloudModal() {
   }
 }
 
-async function testCloudConnectionInModal() {
+async function saveGoogleSheetsUrl() {
+  const urlEl = document.getElementById('cfg-gs-url');
+  if (!urlEl) return;
+  const url = urlEl.value.trim();
   try {
-    const res = await fetch('/api/cloud/test', { method: 'POST' });
-    const json = await res.json();
-    alert(`[${json.provider}]\n\n${json.message}`);
-  } catch (e) {
-    alert("កំហុសក្នុងការតេស្ត ៖ " + e.message);
-  }
-}
-
-async function saveCloudConfigFromModal() {
-  const fbUrl = document.getElementById('cfg-firebase-url').value.trim();
-  try {
-    const res = await fetch('/api/cloud/config', {
+    const res = await fetch('/api/google-sheets/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ firebase_url: fbUrl })
+      body: JSON.stringify({ web_app_url: url })
     });
     const json = await res.json();
     if (json.status === 'success') {
-      alert("✅ " + json.message);
+      showToast('✅ ' + json.message);
       checkCloudStatus();
+      openCloudModal();
+    } else {
+      alert('⚠️ ' + json.message);
     }
-  } catch (e) {
-    alert("កំហុសក្នុងការរក្សាទុក ៖ " + e.message);
+  } catch (err) {
+    alert('❌ មិនអាចរក្សាទុកបាន ៖ ' + err.message);
   }
 }
 
-async function pushDataToCloudFromModal() {
+async function testGoogleSheetsConnection() {
+  const urlEl = document.getElementById('cfg-gs-url');
+  const url = urlEl ? urlEl.value.trim() : '';
   try {
-    const res = await fetch('/api/cloud/push', { method: 'POST' });
+    const res = await fetch('/api/google-sheets/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ web_app_url: url })
+    });
+    const json = await res.json();
+    alert(`[${json.provider || 'Google Sheets'}]\n\n${json.message}`);
+  } catch (err) {
+    alert('កំហុសក្នុងការតេស្ត ៖ ' + err.message);
+  }
+}
+
+async function syncInitialDataToGoogleSheets() {
+  try {
+    showToast('⏳ កំពុងផ្ញើទិន្នន័យកាលវិភាគទៅ Google Sheets...');
+    const res = await fetch('/api/google-sheets/sync', { method: 'POST' });
     const json = await res.json();
     if (json.status === 'success') {
-      alert("✅ " + json.message);
+      alert('✅ ' + json.message + '\n\nឥឡូវអ្នកអាចបើកមើល Google Sheet នោះ នឹងឃើញសន្លឹកបៀកាលវិភាគ និងបញ្ជីគ្រូទាំងអស់!');
+      openCloudModal();
     } else {
-      alert("⚠️ " + json.message);
+      alert('⚠️ ' + json.message);
     }
-  } catch (e) {
-    alert("កំហុស ៖ " + e.message);
+  } catch (err) {
+    alert('កំហុស ៖ ' + err.message);
   }
+}
+
+async function copyAppsScriptCode() {
+  const btn = document.getElementById('btn-copy-script');
+  try {
+    const res = await fetch('/api/google-sheets/script');
+    const json = await res.json();
+    if (json.status === 'success' && json.script) {
+      await navigator.clipboard.writeText(json.script);
+      if (btn) btn.innerHTML = '<span>✅</span> <span>បានចម្លងរួចរាល់!</span>';
+      showToast('✅ បានចម្លងកូដ Google Apps Script ទៅក្នុង Clipboard!');
+      setTimeout(() => {
+        if (btn) btn.innerHTML = '<span>📋</span> <span>ចម្លងកូដ Apps Script</span>';
+      }, 3000);
+    } else {
+      alert('មិនអាចទាញយកកូដ Script បានទេ');
+    }
+  } catch (err) {
+    alert('កំហុសក្នុងការចម្លង ៖ ' + err.message);
+  }
+}
+
+async function testCloudConnectionInModal() {
+  return testGoogleSheetsConnection();
+}
+
+async function saveCloudConfigFromModal() {
+  return saveGoogleSheetsUrl();
+}
+
+async function pushDataToCloudFromModal() {
+  return syncInitialDataToGoogleSheets();
 }
 
 // Fetch initial data
 async function initApp() {
   loadStoredRole();
 
+  // Clear any legacy local overrides from previous sessions so all devices stay 100% unified
+  try {
+    localStorage.removeItem('timeline_custom_homeroom');
+    localStorage.removeItem('timeline_custom_teachers');
+  } catch (e) {}
+
   // 1. Instant hydration from pre-rendered window.INITIAL_DATA
   if (window.INITIAL_DATA && window.INITIAL_DATA.status === 'success') {
     appState.data = window.INITIAL_DATA;
-    applyLocalStorageOverrides();
     const codes = Object.keys(appState.data.teachers || {});
     if (codes.length > 0 && !codes.includes(appState.selectedTeacherCode)) {
       appState.selectedTeacherCode = appState.currentTeacherCode || codes[0];
@@ -774,7 +843,7 @@ async function initApp() {
     setupEventListeners();
   }
 
-  // 2. Fetch or sync latest data from /api/data
+  // 2. Fetch or sync latest data from /api/data directly from cloud database
   try {
     const res = await fetch('/api/data');
     if (res.ok) {
@@ -782,7 +851,6 @@ async function initApp() {
       if (json.status === 'success') {
         const hadData = !!appState.data;
         appState.data = json;
-        applyLocalStorageOverrides();
         const codes = Object.keys(json.teachers || {});
         if (codes.length > 0 && (!appState.selectedTeacherCode || !codes.includes(appState.selectedTeacherCode))) {
           appState.selectedTeacherCode = codes[0];
@@ -814,8 +882,8 @@ async function initApp() {
   // Check Cloud Database connection
   checkCloudStatus();
 
-  // Auto-sync from online shared database every 30 seconds
-  setInterval(silentCloudSync, 30000);
+  // Auto-sync from online shared database every 15 seconds
+  setInterval(silentCloudSync, 15000);
 
   // Auto-sync when user returns to app/tab
   document.addEventListener('visibilitychange', () => {
@@ -832,14 +900,12 @@ async function refreshData(callback) {
     const json = await res.json();
     if (json.status === 'success') {
       appState.data = json;
-      applyLocalStorageOverrides();
       renderStatsBar();
       renderActiveTab();
       if (callback) callback();
     }
   } catch (err) {
     console.error('Refresh error:', err);
-    applyLocalStorageOverrides();
     renderActiveTab();
   }
 }
@@ -904,6 +970,9 @@ function renderActiveTab() {
       break;
     case 'homeroom_manager':
       renderHomeroomManagerView(container);
+      break;
+    case 'scheduler':
+      renderSchedulerView(container);
       break;
     case 'master':
       renderMasterView(container);
@@ -2039,8 +2108,6 @@ async function saveSingleHomeroom(classId) {
     return;
   }
 
-  setLocalCustomHomeroom({ [classId]: newName });
-
   try {
     const res = await fetch('/api/save-homeroom', {
       method: 'POST',
@@ -2049,12 +2116,13 @@ async function saveSingleHomeroom(classId) {
     });
     const result = await res.json();
     if (result.status === 'success') {
-      alert(`✅ បានរក្សាទុកឈ្មោះគ្រូបន្ទុកថ្នាក់ ${classId} ៖ ${newName}`);
+      showToast(`✅ បានរក្សាទុកឈ្មោះគ្រូបន្ទុកថ្នាក់ ${classId} ៖ ${newName}`);
       refreshData();
+    } else {
+      alert('⚠️ ' + (result.message || 'មិនអាចរក្សាទុកបានទេ'));
     }
   } catch (err) {
-    alert(`✅ បានរក្សាទុកក្នុងកម្មវិធីរុករក (Browser) សម្រាប់ថ្នាក់ ${classId} ៖ ${newName}`);
-    refreshData();
+    alert('❌ មិនអាចរក្សាទុកទៅកាន់ Server ៖ ' + err.message);
   }
 }
 
@@ -2069,8 +2137,6 @@ async function saveAllHomeroomTeachers() {
     }
   });
 
-  setLocalCustomHomeroom(homeroomMap);
-
   try {
     const res = await fetch('/api/save-homeroom', {
       method: 'POST',
@@ -2079,12 +2145,13 @@ async function saveAllHomeroomTeachers() {
     });
     const result = await res.json();
     if (result.status === 'success') {
-      alert('✅ បានរក្សាទុកឈ្មោះគ្រូបន្ទុកថ្នាក់ទាំង ១៧ ថ្នាក់ដោយជោគជ័យ!');
+      showToast('✅ បានរក្សាទុកឈ្មោះគ្រូបន្ទុកថ្នាក់ទាំង ១៧ ថ្នាក់ក្នុង Database រួចរាល់!');
       refreshData();
+    } else {
+      alert('⚠️ ' + (result.message || 'មិនអាចរក្សាទុកបានទេ'));
     }
   } catch (err) {
-    alert('✅ បានរក្សាទុកឈ្មោះគ្រូបន្ទុកថ្នាក់ក្នុងកម្មវិធីរុករក (Browser) រួចរាល់!');
-    refreshData();
+    alert('❌ មិនអាចរក្សាទុកទៅកាន់ Server ៖ ' + err.message);
   }
 }
 
@@ -2566,8 +2633,6 @@ async function saveHomeroomModal(classId) {
     return;
   }
 
-  setLocalCustomHomeroom({ [classId]: newName });
-
   try {
     const res = await fetch('/api/save-homeroom', {
       method: 'POST',
@@ -2576,12 +2641,14 @@ async function saveHomeroomModal(classId) {
     });
     const result = await res.json();
     if (result.status === 'success') {
+      showToast(`✅ បានរក្សាទុកឈ្មោះគ្រូបន្ទុកថ្នាក់ ${classId} ៖ ${newName}`);
       closeModal();
       refreshData();
+    } else {
+      alert('⚠️ ' + (result.message || 'មិនអាចរក្សាទុកបានទេ'));
     }
   } catch (err) {
-    closeModal();
-    refreshData();
+    alert('❌ មិនអាចរក្សាទុកទៅកាន់ Server ៖ ' + err.message);
   }
 }
 
@@ -2702,7 +2769,6 @@ async function saveNewSubjectTeacher() {
   }
 
   const payload = { code, name, gender, subject_key, phone, homeroom_class, note };
-  setLocalCustomTeachers({ [code]: payload });
 
   try {
     const res = await fetch('/api/add-subject-teacher', {
@@ -2712,15 +2778,14 @@ async function saveNewSubjectTeacher() {
     });
     const result = await res.json();
     if (result.status === 'success') {
+      showToast(`✅ បានបន្ថែមគ្រូ ${name} (${code}) ទៅកាន់ Database ជោគជ័យ!`);
       closeModal();
       refreshData();
     } else {
-      closeModal();
-      refreshData();
+      alert('⚠️ ' + (result.message || 'មិនអាចបន្ថែមបានទេ'));
     }
   } catch (err) {
-    closeModal();
-    refreshData();
+    alert('❌ មិនអាចរក្សាទុកទៅកាន់ Server ៖ ' + err.message);
   }
 }
 
@@ -2802,8 +2867,6 @@ async function saveSingleTeacherModal(code) {
     }
   };
 
-  setLocalCustomTeachers(payload);
-
   try {
     const res = await fetch('/api/save-teacher-profiles', {
       method: 'POST',
@@ -2812,12 +2875,14 @@ async function saveSingleTeacherModal(code) {
     });
     const result = await res.json();
     if (result.status === 'success') {
+      showToast(`✅ បានកែសម្រួលព័ត៌មានគ្រូ ${code} រួចរាល់!`);
       closeModal();
       refreshData();
+    } else {
+      alert('⚠️ ' + (result.message || 'មិនអាចកែសម្រួលបានទេ'));
     }
   } catch (err) {
-    closeModal();
-    refreshData();
+    alert('❌ មិនអាចរក្សាទុកទៅកាន់ Server ៖ ' + err.message);
   }
 }
 
@@ -2844,6 +2909,1090 @@ async function deleteCustomTeacher(code) {
 function closeModal() {
   const modal = document.getElementById('edit-modal');
   modal.innerHTML = '';
+}
+
+// -------------------------------------------------------------
+// TIMETABLE SCHEDULER & ARRANGER (មុខងាររៀបចំកាលវិភាគបង្រៀន)
+// -------------------------------------------------------------
+
+function getShiftSlotIndex(timeSlots, dayIndex, periodIndex) {
+  let idx = 0;
+  for (let d = 0; d < dayIndex; d++) {
+    idx += timeSlots[d].periods.length;
+  }
+  return idx + periodIndex;
+}
+
+function getShiftSlotInfo(timeSlots, slotIndex) {
+  let count = 0;
+  for (let d = 0; d < timeSlots.length; d++) {
+    const dayObj = timeSlots[d];
+    for (let p = 0; p < dayObj.periods.length; p++) {
+      if (count === slotIndex) {
+        return {
+          dayIndex: d,
+          day: dayObj.day,
+          dayKey: dayObj.day_key,
+          periodIndex: p,
+          period: dayObj.periods[p]
+        };
+      }
+      count++;
+    }
+  }
+  return null;
+}
+
+function getScheduleConflicts(data) {
+  if (!data) return { list: [], count: 0, conflictedSlotMap: {} };
+  const conflicts = [];
+  const conflictedSlotMap = {};
+
+  const classes = (data.classes || []).map(c => c.id);
+  const teachers = data.teachers || {};
+
+  // Check Morning (28 slots)
+  const mSlots = (data.time_slots && data.time_slots.morning) || [];
+  const mSlotInfos = [];
+  mSlots.forEach(d => {
+    (d.periods || []).forEach(p => {
+      mSlotInfos.push({ day: d.day, period: p });
+    });
+  });
+
+  for (let sIdx = 0; sIdx < mSlotInfos.length; sIdx++) {
+    const seen = {};
+    for (const c of classes) {
+      const slots = (data.morning_schedule && data.morning_schedule[c]) || [];
+      if (sIdx < slots.length) {
+        const code = slots[sIdx];
+        if (code && code !== 'ពលកម្ម') {
+          if (seen[code]) {
+            const t = teachers[code];
+            const conflictObj = {
+              shift: 'morning',
+              slotIndex: sIdx,
+              day: mSlotInfos[sIdx].day,
+              period: mSlotInfos[sIdx].period,
+              teacherCode: code,
+              teacherName: t ? t.name : code,
+              subjectName: t ? t.subject_name : '',
+              classA: seen[code],
+              classB: c
+            };
+            conflicts.push(conflictObj);
+            conflictedSlotMap[`morning_${seen[code]}_${sIdx}`] = conflictObj;
+            conflictedSlotMap[`morning_${c}_${sIdx}`] = conflictObj;
+          } else {
+            seen[code] = c;
+          }
+        }
+      }
+    }
+  }
+
+  // Check Afternoon (24 slots)
+  const aSlots = (data.time_slots && data.time_slots.afternoon) || [];
+  const aSlotInfos = [];
+  aSlots.forEach(d => {
+    (d.periods || []).forEach(p => {
+      aSlotInfos.push({ day: d.day, period: p });
+    });
+  });
+
+  for (let sIdx = 0; sIdx < aSlotInfos.length; sIdx++) {
+    const seen = {};
+    for (const c of classes) {
+      const slots = (data.afternoon_schedule && data.afternoon_schedule[c]) || [];
+      if (sIdx < slots.length) {
+        const code = slots[sIdx];
+        if (code && code !== 'ពលកម្ម') {
+          if (seen[code]) {
+            const t = teachers[code];
+            const conflictObj = {
+              shift: 'afternoon',
+              slotIndex: sIdx,
+              day: aSlotInfos[sIdx].day,
+              period: aSlotInfos[sIdx].period,
+              teacherCode: code,
+              teacherName: t ? t.name : code,
+              subjectName: t ? t.subject_name : '',
+              classA: seen[code],
+              classB: c
+            };
+            conflicts.push(conflictObj);
+            conflictedSlotMap[`afternoon_${seen[code]}_${sIdx}`] = conflictObj;
+            conflictedSlotMap[`afternoon_${c}_${sIdx}`] = conflictObj;
+          } else {
+            seen[code] = c;
+          }
+        }
+      }
+    }
+  }
+
+  return { list: conflicts, count: conflicts.length, conflictedSlotMap };
+}
+
+function getTeacherOccupiedClasses(data, shift, slotIndex, teacherCode) {
+  if (!data || !teacherCode || teacherCode === 'ពលកម្ម') return [];
+  const sched = shift === 'morning' ? data.morning_schedule : data.afternoon_schedule;
+  if (!sched) return [];
+  const occupied = [];
+  for (const c in sched) {
+    const slots = sched[c] || [];
+    if (slots[slotIndex] === teacherCode) {
+      occupied.push(c);
+    }
+  }
+  return occupied;
+}
+
+function setSchedulerMode(mode) {
+  appState.schedulerMode = mode;
+  appState.schedulerSwapFirstSlot = null;
+  renderActiveTab();
+}
+
+function setSchedulerShift(shift) {
+  appState.schedulerShift = shift;
+  appState.schedulerSwapFirstSlot = null;
+  renderActiveTab();
+}
+
+function setSchedulerClass(classId) {
+  appState.schedulerClassId = classId;
+  appState.schedulerSwapFirstSlot = null;
+  renderActiveTab();
+}
+
+function setSchedulerTeacher(teacherCode) {
+  appState.schedulerTeacherCode = teacherCode;
+  appState.schedulerSwapFirstSlot = null;
+  renderActiveTab();
+}
+
+function renderSchedulerView(container) {
+  if (!appState.data) {
+    container.innerHTML = '<div class="p-8 text-center text-gray-500">កំពុងដំណើរការទិន្នន័យ...</div>';
+    return;
+  }
+
+  const data = appState.data;
+  const classes = data.classes || [];
+  const teachers = data.teachers || {};
+  const isAdmin = appState.userRole === 'admin';
+  const conflictsData = getScheduleConflicts(data);
+  const shift = appState.schedulerShift || 'morning';
+  const mode = appState.schedulerMode || 'class';
+  const swapSlot = appState.schedulerSwapFirstSlot;
+
+  const activeClass = classes.find(c => c.id === appState.schedulerClassId) || classes[0];
+  const activeTeacher = teachers[appState.schedulerTeacherCode] || Object.values(teachers)[0];
+
+  container.innerHTML = `
+    <div class="space-y-5">
+      <!-- Top Header & Status Banner -->
+      <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div class="flex items-center gap-3">
+            <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 text-white flex items-center justify-center text-2xl shadow-md shrink-0">
+              🛠️
+            </div>
+            <div>
+              <div class="flex items-center gap-2 flex-wrap">
+                <h2 class="text-lg sm:text-xl font-bold text-gray-900">ប្រព័ន្ធរៀបចំកាលវិភាគបង្រៀន (Timetable Scheduler)</h2>
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-bold ${conflictsData.count === 0 ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-rose-100 text-rose-800 border border-rose-300 animate-pulse'}">
+                  ${conflictsData.count === 0 ? '🟢 គ្មានការជាន់ម៉ោង' : `⚠️ ជាន់ម៉ោង ${conflictsData.count} ករណី`}
+                </span>
+              </div>
+              <p class="text-xs text-slate-500 mt-0.5">
+                រៀបចំ ប្តូរម៉ោង និងចាត់ចែងគ្រូបង្រៀនតាមថ្នាក់ ជាមួយប្រព័ន្ធត្រួតពិនិត្យការជាន់ម៉ោងផ្ទាល់ភ្លាមៗ (Real-time Conflict Checking)
+              </p>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2 flex-wrap">
+            <button
+              onclick="saveAllScheduleToCloud()"
+              class="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm transition flex items-center gap-1.5"
+              title="រក្សាទុកកាលវិភាគទាំងស្រុងទៅកាន់ Database"
+            >
+              <span>💾</span> រក្សាទុកកាលវិភាគ
+            </button>
+            <button
+              onclick="window.location.href='/api/export-excel'"
+              class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold border border-slate-300 transition flex items-center gap-1.5"
+            >
+              <span>📥</span> Excel
+            </button>
+            <button
+              onclick="printSchedulerSchedule()"
+              class="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm transition flex items-center gap-1.5"
+            >
+              <span>🖨️</span> បោះពុម្ព
+            </button>
+          </div>
+        </div>
+
+        ${!isAdmin ? `
+          <div class="mt-4 p-3.5 bg-amber-50 border border-amber-300 rounded-xl flex items-center justify-between gap-3 flex-wrap">
+            <div class="flex items-center gap-2.5 text-xs text-amber-900">
+              <span class="text-xl">🔒</span>
+              <div>
+                <strong>របៀបមើលសាកល្បង (View Only) ៖</strong>
+                <span>ដើម្បីផ្លាស់ប្តូរ និងរក្សាទុកកាលវិភាគទៅកាន់ Cloud Database សូមប្តូរសិទ្ធិជាអ្នកគ្រប់គ្រង (Admin)</span>
+              </div>
+            </div>
+            <button
+              onclick="openRoleModal('admin')"
+              class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition shadow-sm"
+            >
+              🛡️ បញ្ចូល Admin PIN
+            </button>
+          </div>
+        ` : ''}
+
+        ${swapSlot ? `
+          <div class="mt-4 p-3.5 bg-indigo-50 border-2 border-indigo-400 rounded-xl flex items-center justify-between gap-3 flex-wrap shadow-sm animate-pulse">
+            <div class="flex items-center gap-2.5 text-xs text-indigo-900">
+              <span class="text-xl">🔄</span>
+              <div>
+                <strong class="text-sm">កំពុងដំណើរការប្តូរម៉ោងបង្រៀន (Swap Slots) ៖</strong>
+                <div class="mt-0.5">
+                  បានជ្រើសរើសម៉ោងទី១ ៖ <span class="bg-white px-2 py-0.5 rounded font-bold border border-indigo-300">ថ្ងៃ${swapSlot.dayLabel} (${swapSlot.periodLabel}) - គ្រូ ${swapSlot.teacherCode || '(ទំនេរ)'}</span>
+                  • សូមចុចលើក្រឡាម៉ោងទី២ ដើម្បីប្តូរគ្នាភ្លាមៗ!
+                </div>
+              </div>
+            </div>
+            <button
+              onclick="cancelSchedulerSwap()"
+              class="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition"
+            >
+              ✕ បោះបង់ការប្តូរ
+            </button>
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Control Toolbar: Mode Switcher, Shift, Target Picker -->
+      <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <!-- Mode Switcher -->
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-bold text-slate-500">ទិដ្ឋភាព ៖</span>
+            <div class="inline-flex p-1 bg-slate-100 rounded-xl text-xs font-bold">
+              <button
+                onclick="setSchedulerMode('class')"
+                class="px-3 py-1.5 rounded-lg transition ${mode === 'class' ? 'bg-white text-blue-700 shadow-sm font-extrabold' : 'text-slate-600 hover:text-slate-900'}"
+              >
+                🏫 តាមថ្នាក់រៀន
+              </button>
+              <button
+                onclick="setSchedulerMode('teacher')"
+                class="px-3 py-1.5 rounded-lg transition ${mode === 'teacher' ? 'bg-white text-blue-700 shadow-sm font-extrabold' : 'text-slate-600 hover:text-slate-900'}"
+              >
+                👨‍🏫 តាមគ្រូបង្រៀន
+              </button>
+            </div>
+          </div>
+
+          <!-- Shift Switcher -->
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-bold text-slate-500">វេនសិក្សា ៖</span>
+            <div class="inline-flex p-1 bg-slate-100 rounded-xl text-xs font-bold">
+              <button
+                onclick="setSchedulerShift('morning')"
+                class="px-3 py-1.5 rounded-lg transition flex items-center gap-1 ${shift === 'morning' ? 'bg-blue-600 text-white shadow-sm font-extrabold' : 'text-slate-600 hover:text-slate-900'}"
+              >
+                <span>☀️</span> ពេលព្រឹក (៧-១២)
+              </button>
+              <button
+                onclick="setSchedulerShift('afternoon')"
+                class="px-3 py-1.5 rounded-lg transition flex items-center gap-1 ${shift === 'afternoon' ? 'bg-amber-600 text-white shadow-sm font-extrabold' : 'text-slate-600 hover:text-slate-900'}"
+              >
+                <span>🌙</span> ពេលរសៀល (១-៥)
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Target Selector (Classes or Teachers) -->
+        ${mode === 'class' ? `
+          <div>
+            <div class="text-xs font-bold text-slate-500 mb-2 flex items-center justify-between">
+              <span>ជ្រើសរើសថ្នាក់ដែលត្រូវរៀបចំ ៖</span>
+              <span class="text-slate-400">សរុប ${classes.length} ថ្នាក់</span>
+            </div>
+            <div class="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
+              ${classes.map(c => `
+                <button
+                  onclick="setSchedulerClass('${c.id}')"
+                  class="px-3 py-1.5 rounded-xl text-xs font-bold transition shrink-0 border ${c.id === activeClass.id ? 'bg-blue-600 text-white border-blue-600 shadow-sm ring-2 ring-blue-300' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}"
+                >
+                  ${c.id}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+        ` : `
+          <div>
+            <div class="text-xs font-bold text-slate-500 mb-2 flex items-center justify-between">
+              <span>ជ្រើសរើសលោកគ្រូ-អ្នកគ្រូ ៖</span>
+              <span class="text-slate-400">សរុប ${Object.keys(teachers).length} នាក់</span>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <select
+                onchange="setSchedulerTeacher(this.value)"
+                class="bg-slate-50 border border-slate-300 text-slate-800 text-xs font-bold rounded-xl px-3 py-2 focus:ring-2 focus:ring-blue-500 max-w-xs"
+              >
+                ${Object.values(teachers).sort((a,b) => a.code.localeCompare(b.code)).map(t => `
+                  <option value="${t.code}" ${t.code === activeTeacher.code ? 'selected' : ''}>
+                    ${t.code} - ${t.name} (${t.subject_name})
+                  </option>
+                `).join('')}
+              </select>
+
+              <div class="text-xs text-slate-600 flex items-center gap-2">
+                <span>បន្ទុកម៉ោងសរុប ៖ <strong class="text-blue-900">${activeTeacher.total_hours} ម៉ោង/សប្ដាហ៍</strong></span>
+                <span>•</span>
+                <span>ព្រឹក ៖ <strong>${activeTeacher.morning_hours}h</strong></span>
+                <span>•</span>
+                <span>រសៀល ៖ <strong>${activeTeacher.afternoon_hours}h</strong></span>
+              </div>
+            </div>
+          </div>
+        `}
+      </div>
+
+      <!-- Conflicts Alert Details (if any) -->
+      ${conflictsData.count > 0 ? `
+        <div class="bg-rose-50 border border-rose-300 rounded-2xl p-4 shadow-sm">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-start gap-2.5">
+              <span class="text-2xl mt-0.5">⚠️</span>
+              <div>
+                <h3 class="font-bold text-sm text-rose-950">រកឃើញការជាន់ម៉ោងបង្រៀនចំនួន ${conflictsData.count} ករណី!</h3>
+                <p class="text-xs text-rose-800 mt-0.5">លោកគ្រូ-អ្នកគ្រូដូចគ្នា ត្រូវបានដាក់បង្រៀននៅថ្នាក់លើសពីមួយ ក្នុងពេលតែមួយ។ សូមពិនិត្យ និងកែសម្រួលក្រឡាដែលមានពណ៌ក្រហមខាងក្រោម ៖</p>
+                <div class="mt-2.5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  ${conflictsData.list.map(cf => `
+                    <div class="bg-white/90 p-2.5 rounded-xl border border-rose-200 text-xs shadow-2xs flex items-center justify-between gap-2">
+                      <div>
+                        <div class="font-bold text-rose-900">${cf.teacherCode} (${cf.teacherName})</div>
+                        <div class="text-[11px] text-rose-700">${cf.shift === 'morning' ? 'ព្រឹក' : 'រសៀល'} ថ្ងៃ${cf.day} (${cf.period})</div>
+                      </div>
+                      <div class="text-right">
+                        <span class="px-2 py-0.5 rounded font-black bg-rose-100 text-rose-800 text-[10px]">
+                          ${cf.classA} ⚡ ${cf.classB}
+                        </span>
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- Main Schedule Grid Rendering -->
+      ${mode === 'class' ? renderSchedulerClassMode(activeClass, shift, conflictsData) : renderSchedulerTeacherMode(activeTeacher, shift, conflictsData)}
+    </div>
+  `;
+}
+
+function renderSchedulerClassMode(activeClass, shift, conflictsData) {
+  const data = appState.data;
+  const timeSlots = data.time_slots[shift] || [];
+  const sched = shift === 'morning' ? data.morning_schedule : data.afternoon_schedule;
+  const slots = sched[activeClass.id] || [];
+  const teachers = data.teachers || {};
+  const swapSlot = appState.schedulerSwapFirstSlot;
+
+  let maxPeriods = 0;
+  timeSlots.forEach(d => {
+    if (d.periods.length > maxPeriods) maxPeriods = d.periods.length;
+  });
+
+  // Calculate subject counts in this class for summary
+  const subjectHours = {};
+  slots.forEach(code => {
+    if (code && code !== 'ពលកម្ម') {
+      const t = teachers[code];
+      const subj = t ? t.subject_name : code;
+      subjectHours[subj] = (subjectHours[subj] || 0) + 1;
+    }
+  });
+
+  const totalAssignedHours = Object.values(subjectHours).reduce((a, b) => a + b, 0);
+  const totalCapacity = shift === 'morning' ? 28 : 24;
+
+  return `
+    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+      <!-- Class Subheader -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-blue-600 text-white font-extrabold flex items-center justify-center text-lg shadow-sm">
+            ${activeClass.id}
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-gray-900 flex items-center gap-2">
+              <span>កាលវិភាគថ្នាក់ ${activeClass.id} (${activeClass.level})</span>
+              <span class="text-xs font-semibold px-2 py-0.5 rounded-full ${shift === 'morning' ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-amber-50 text-amber-700 border border-amber-200'}">
+                ${shift === 'morning' ? 'វេនព្រឹក' : 'វេនរសៀល'}
+              </span>
+            </h3>
+            <div class="text-xs text-slate-500 mt-0.5">
+              គ្រូបន្ទុកថ្នាក់ ៖ <strong>${activeClass.homeroom}</strong> • ម៉ោងបង្រៀនសរុប ៖ <strong>${totalAssignedHours}/${totalCapacity} ម៉ោង</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+          <button
+            onclick="openClearClassModal('${shift}', '${activeClass.id}')"
+            class="px-3 py-1.5 text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl border border-rose-200 transition flex items-center gap-1"
+          >
+            <span>🧹</span> សម្អាតថ្នាក់នេះ
+          </button>
+        </div>
+      </div>
+
+      <!-- Grid Table -->
+      <div class="overflow-x-auto border border-slate-200 rounded-xl shadow-2xs">
+        <table class="w-full text-xs text-center border-collapse">
+          <thead>
+            <tr class="bg-slate-100 text-slate-700">
+              <th class="border border-slate-200 py-2.5 px-3 w-20 text-[11px] font-bold">ម៉ោង \\ ថ្ងៃ</th>
+              ${timeSlots.map(d => `
+                <th class="border border-slate-200 py-2.5 px-3 font-bold text-xs ${shift === 'morning' ? 'bg-blue-50 text-blue-900' : 'bg-amber-50 text-amber-900'}">
+                  ថ្ងៃ${d.day}
+                </th>
+              `).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${Array.from({ length: maxPeriods }).map((_, pIdx) => {
+              const periodLabel = shift === 'morning'
+                ? (['៧:០០-៨:០០', '៨:០០-៩:០០', '៩:០០-១០:០០', '១០:០០-១១:០០', '១១:០០-១២:០០'][pIdx] || '')
+                : (['១:០០-២:០០', '២:០០-៣:០០', '៣:០០-៤:០០', '៤:០០-៥:០០'][pIdx] || '');
+
+              const shortPeriodLabel = shift === 'morning'
+                ? (['7-8', '8-9', '9-10', '10-11', '11-12'][pIdx] || '')
+                : (['1-2', '2-3', '3-4', '4-5'][pIdx] || '');
+
+              return `
+                <tr class="hover:bg-slate-50/50 transition">
+                  <td class="border border-slate-200 py-2 px-2 font-bold bg-slate-50 text-slate-600 text-[11px]">
+                    <div>${shortPeriodLabel}</div>
+                    <div class="text-[9px] text-slate-400 font-normal">${periodLabel}</div>
+                  </td>
+                  ${timeSlots.map((d, dIdx) => {
+                    const pName = d.periods[pIdx];
+                    if (!pName) {
+                      return `<td class="border border-slate-200 bg-slate-100 text-slate-300">--</td>`;
+                    }
+
+                    if (shift === 'afternoon' && d.day_key === 'Thu') {
+                      return `
+                        <td class="border border-slate-200 bg-amber-50 text-amber-800 font-bold text-xs py-3 px-2">
+                          <span class="px-2 py-1 rounded bg-amber-200 text-amber-900 text-[11px]">🛠️ ពលកម្ម</span>
+                        </td>
+                      `;
+                    }
+
+                    const slotIdx = getShiftSlotIndex(timeSlots, dIdx, pIdx);
+                    const code = slots[slotIdx] || '';
+                    const teacher = teachers[code];
+                    const conflictKey = `${shift}_${activeClass.id}_${slotIdx}`;
+                    const hasConflict = !!conflictsData.conflictedSlotMap[conflictKey];
+                    const isSelectedForSwap = swapSlot && swapSlot.shift === shift && swapSlot.classId === activeClass.id && swapSlot.slotIndex === slotIdx;
+
+                    return `
+                      <td
+                        class="border border-slate-200 p-1.5 transition relative group ${isSelectedForSwap ? 'ring-4 ring-indigo-500 bg-indigo-50 font-bold' : ''} ${hasConflict ? 'bg-rose-50 border-rose-400' : ''}"
+                      >
+                        ${code && code !== 'ពលកម្ម' ? `
+                          <div
+                            onclick="handleSchedulerCellClick('${shift}', '${activeClass.id}', ${slotIdx}, '${d.day}', '${shortPeriodLabel}', '${code}')"
+                            class="p-2 rounded-xl cursor-pointer transition transform hover:scale-[1.02] shadow-2xs border ${hasConflict ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}"
+                            style="background-color: ${hasConflict ? '#fff1f2' : (teacher ? teacher.subject_color : '#f8fafc')};"
+                          >
+                            <div class="flex items-center justify-between gap-1">
+                              <span class="font-black text-sm" style="color: ${hasConflict ? '#be123c' : (teacher ? teacher.subject_text_color : '#0f172a')}">
+                                ${code}
+                              </span>
+                              ${hasConflict ? `
+                                <span class="px-1.5 py-0.2 rounded bg-rose-600 text-white font-extrabold text-[9px] animate-pulse">
+                                  ជាន់!
+                                </span>
+                              ` : ''}
+                            </div>
+                            <div class="text-[11px] font-bold text-slate-800 truncate mt-0.5">
+                              ${teacher ? teacher.name : code}
+                            </div>
+                            <div class="text-[10px] text-slate-500 truncate">
+                              ${teacher ? teacher.subject_name : ''}
+                            </div>
+
+                            <!-- Hover / Action Buttons -->
+                            <div class="mt-1.5 pt-1 border-t border-black/5 flex items-center justify-center gap-1.5 text-[10px]">
+                              <button
+                                onclick="event.stopPropagation(); startSchedulerSwap('${shift}', '${activeClass.id}', ${slotIdx}, '${d.day}', '${shortPeriodLabel}', '${code}')"
+                                class="px-1.5 py-0.5 rounded bg-white/80 hover:bg-white text-slate-700 font-bold border border-slate-300 shadow-2xs"
+                                title="ជ្រើសរើសដើម្បីប្តូរម៉ោង"
+                              >
+                                🔄 ប្តូរ
+                              </button>
+                              <button
+                                onclick="event.stopPropagation(); saveSchedulerSlot('${shift}', '${activeClass.id}', ${slotIdx}, '')"
+                                class="px-1.5 py-0.5 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold border border-rose-200 shadow-2xs"
+                                title="សម្អាតម៉ោងនេះ"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+                        ` : `
+                          <div
+                            onclick="handleSchedulerCellClick('${shift}', '${activeClass.id}', ${slotIdx}, '${d.day}', '${shortPeriodLabel}', '')"
+                            class="p-3 rounded-xl border border-dashed border-slate-300 hover:border-blue-500 hover:bg-blue-50/50 cursor-pointer text-slate-400 hover:text-blue-600 transition flex flex-col items-center justify-center min-h-[72px]"
+                          >
+                            <span class="text-sm font-bold">+</span>
+                            <span class="text-[10px] font-medium mt-0.5">ដាក់គ្រូ</span>
+                          </div>
+                        `}
+                      </td>
+                    `;
+                  }).join('')}
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Subject Allocation Breakdown for this Class -->
+      <div class="pt-3 border-t border-slate-100">
+        <h4 class="text-xs font-bold text-slate-600 mb-2 flex items-center justify-between">
+          <span>បែងចែកម៉ោងតាមមុខវិជ្ជាក្នុងថ្នាក់ ${activeClass.id} ៖</span>
+          <span class="text-blue-700 font-bold">${totalAssignedHours} / ${totalCapacity} ម៉ោង</span>
+        </h4>
+        <div class="flex flex-wrap gap-2">
+          ${Object.keys(subjectHours).length > 0 ? Object.entries(subjectHours).map(([sName, hrs]) => `
+            <div class="px-2.5 py-1 rounded-xl bg-slate-50 border border-slate-200 text-xs flex items-center gap-1.5">
+              <span class="font-semibold text-slate-700">${sName} ៖</span>
+              <strong class="text-blue-700">${hrs} ម៉ោង</strong>
+            </div>
+          `).join('') : '<span class="text-xs text-slate-400">មិនទាន់មានមុខវិជ្ជាត្រូវបានចាត់ចែងនៅឡើយទេ។</span>'}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSchedulerTeacherMode(activeTeacher, shift, conflictsData) {
+  const data = appState.data;
+  const timeSlots = data.time_slots[shift] || [];
+  const sched = shift === 'morning' ? data.morning_schedule : data.afternoon_schedule;
+  const classes = data.classes || [];
+
+  let maxPeriods = 0;
+  timeSlots.forEach(d => {
+    if (d.periods.length > maxPeriods) maxPeriods = d.periods.length;
+  });
+
+  return `
+    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-blue-500 text-white font-extrabold flex items-center justify-center text-lg shadow-sm">
+            ${activeTeacher.code}
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-gray-900">
+              កាលវិភាគរបស់លោកគ្រូ-អ្នកគ្រូ ៖ ${activeTeacher.name}
+            </h3>
+            <div class="text-xs text-slate-500 mt-0.5">
+              មុខវិជ្ជា ៖ <strong>${activeTeacher.subject_name}</strong> • បន្ទុកម៉ោង ៖ <strong>${activeTeacher.total_hours} ម៉ោង/សប្ដាហ៍</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="overflow-x-auto border border-slate-200 rounded-xl shadow-2xs">
+        <table class="w-full text-xs text-center border-collapse">
+          <thead>
+            <tr class="bg-slate-100 text-slate-700">
+              <th class="border border-slate-200 py-2.5 px-3 w-20 text-[11px] font-bold">ម៉ោង \\ ថ្ងៃ</th>
+              ${timeSlots.map(d => `
+                <th class="border border-slate-200 py-2.5 px-3 font-bold text-xs ${shift === 'morning' ? 'bg-blue-50 text-blue-900' : 'bg-amber-50 text-amber-900'}">
+                  ថ្ងៃ${d.day}
+                </th>
+              `).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${Array.from({ length: maxPeriods }).map((_, pIdx) => {
+              const shortPeriodLabel = shift === 'morning'
+                ? (['7-8', '8-9', '9-10', '10-11', '11-12'][pIdx] || '')
+                : (['1-2', '2-3', '3-4', '4-5'][pIdx] || '');
+
+              return `
+                <tr class="hover:bg-slate-50/50 transition">
+                  <td class="border border-slate-200 py-2 px-2 font-bold bg-slate-50 text-slate-600 text-[11px]">
+                    ${shortPeriodLabel}
+                  </td>
+                  ${timeSlots.map((d, dIdx) => {
+                    const slotIdx = getShiftSlotIndex(timeSlots, dIdx, pIdx);
+                    // Find all classes this teacher is teaching at this slot
+                    const occupiedClasses = [];
+                    for (const c of classes) {
+                      const classSlots = sched[c.id] || [];
+                      if (classSlots[slotIdx] === activeTeacher.code) {
+                        occupiedClasses.push(c.id);
+                      }
+                    }
+
+                    const hasConflict = occupiedClasses.length > 1;
+
+                    return `
+                      <td class="border border-slate-200 p-2 ${hasConflict ? 'bg-rose-50 border-rose-400' : ''}">
+                        ${occupiedClasses.length > 0 ? `
+                          <div class="p-2 rounded-xl ${hasConflict ? 'bg-rose-100 border border-rose-400 text-rose-900' : 'bg-blue-50 border border-blue-200 text-blue-950'} font-bold">
+                            <div class="text-sm">
+                              ${occupiedClasses.map(cid => `ថ្នាក់ ${cid}`).join(', ')}
+                            </div>
+                            ${hasConflict ? `
+                              <div class="text-[10px] text-rose-700 font-extrabold mt-1">
+                                ⚠️ ជាន់ម៉ោង (${occupiedClasses.join(' & ')})
+                              </div>
+                            ` : `
+                              <div class="text-[10px] text-slate-500 font-normal mt-0.5">
+                                កំពុងបង្រៀន
+                              </div>
+                            `}
+                          </div>
+                        ` : `
+                          <div class="p-2 text-slate-300 font-semibold">
+                            -- ទំនេរ --
+                          </div>
+                        `}
+                      </td>
+                    `;
+                  }).join('')}
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function handleSchedulerCellClick(shift, classId, slotIndex, dayLabel, periodLabel, currentCode) {
+  const swap = appState.schedulerSwapFirstSlot;
+  if (swap) {
+    if (swap.shift === shift && swap.classId === classId && swap.slotIndex === slotIndex) {
+      // Clicked same cell -> cancel swap
+      cancelSchedulerSwap();
+    } else {
+      // Execute swap
+      executeSchedulerSwap(shift, classId, swap.slotIndex, slotIndex);
+    }
+  } else {
+    // Open editor modal
+    openSlotEditorModal(shift, classId, slotIndex, dayLabel, periodLabel);
+  }
+}
+
+function startSchedulerSwap(shift, classId, slotIndex, dayLabel, periodLabel, teacherCode) {
+  appState.schedulerSwapFirstSlot = { shift, classId, slotIndex, dayLabel, periodLabel, teacherCode };
+  renderActiveTab();
+  showToast(`🔄 បានជ្រើសរើសម៉ោងទី១ (ថ្ងៃ${dayLabel} ${periodLabel})! សូមចុចលើម៉ោងទី២ ដើម្បីប្តូរ។`);
+}
+
+function cancelSchedulerSwap() {
+  appState.schedulerSwapFirstSlot = null;
+  renderActiveTab();
+  showToast('បានបោះបង់ការប្តូរម៉ោង');
+}
+
+async function executeSchedulerSwap(shift, classId, idxA, idxB) {
+  if (appState.userRole !== 'admin') {
+    showToast('⚠️ ទាមទារសិទ្ធិ Admin ដើម្បីប្តូរម៉ោងបង្រៀន!');
+    openRoleModal('admin');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/schedule/swap-slots', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shift: shift,
+        class_id: classId,
+        index_a: idxA,
+        index_b: idxB
+      })
+    });
+
+    const result = await res.json();
+    if (result.status === 'success') {
+      appState.data.morning_schedule = result.morning_schedule;
+      appState.data.afternoon_schedule = result.afternoon_schedule;
+      appState.schedulerSwapFirstSlot = null;
+      showToast('✅ បានផ្លាស់ប្តូរម៉ោងបង្រៀនដោយជោគជ័យ!');
+      // Refresh teacher calculations
+      await refreshData();
+      renderActiveTab();
+    } else {
+      alert('⚠️ ' + (result.message || 'មិនអាចផ្លាស់ប្តូរម៉ោងបានទេ'));
+    }
+  } catch (err) {
+    alert('❌ មានបញ្ហាក្នុងការភ្ជាប់ Database ៖ ' + err.message);
+  }
+}
+
+function openSlotEditorModal(shift, classId, slotIndex, dayLabel, periodLabel) {
+  const data = appState.data;
+  const sched = shift === 'morning' ? data.morning_schedule : data.afternoon_schedule;
+  const slots = sched[classId] || [];
+  const currentCode = slots[slotIndex] || '';
+  const currentTeacher = data.teachers[currentCode];
+  const teachers = Object.values(data.teachers || {}).sort((a, b) => a.name.localeCompare(b.name, 'km'));
+  const subjects = data.subjects || {};
+
+  const modal = document.getElementById('edit-modal');
+  if (!modal) return;
+
+  function renderModalContent(filterSubj = 'ALL', searchQ = '') {
+    let filteredTeachers = teachers;
+    if (filterSubj !== 'ALL') {
+      filteredTeachers = filteredTeachers.filter(t => t.subject_key === filterSubj);
+    }
+    if (searchQ) {
+      const q = searchQ.toLowerCase();
+      filteredTeachers = filteredTeachers.filter(t =>
+        t.code.toLowerCase().includes(q) ||
+        t.name.toLowerCase().includes(q) ||
+        t.subject_name.toLowerCase().includes(q)
+      );
+    }
+
+    modal.innerHTML = `
+      <div class="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-5 space-y-4 my-auto border border-slate-200">
+          <!-- Header -->
+          <div class="flex justify-between items-center border-b border-slate-100 pb-3">
+            <div class="flex items-center gap-2.5">
+              <span class="w-9 h-9 rounded-xl bg-blue-600 text-white font-black flex items-center justify-center text-sm shadow-sm">
+                ${classId}
+              </span>
+              <div>
+                <h3 class="font-bold text-base text-gray-900">ជ្រើសរើសគ្រូបង្រៀន</h3>
+                <p class="text-[11px] text-slate-500">ថ្នាក់ ${classId} • ពេល${shift === 'morning' ? 'ព្រឹក' : 'រសៀល'} ថ្ងៃ${dayLabel} (${periodLabel})</p>
+              </div>
+            </div>
+            <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 font-bold text-xl px-2">✕</button>
+          </div>
+
+          <!-- Current Assignment Card -->
+          <div class="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-3">
+            <div>
+              <span class="text-[11px] text-slate-500 font-bold">គ្រូបង្រៀនបច្ចុប្បន្ន ៖</span>
+              <div class="font-bold text-sm text-slate-900 mt-0.5">
+                ${currentCode ? `${currentCode} - ${currentTeacher ? currentTeacher.name : currentCode} (${currentTeacher ? currentTeacher.subject_name : ''})` : '<span class="text-slate-400 italic">មិនទាន់មានគ្រូ (ម៉ោងទំនេរ)</span>'}
+              </div>
+            </div>
+            ${currentCode ? `
+              <button
+                onclick="saveSchedulerSlot('${shift}', '${classId}', ${slotIndex}, '')"
+                class="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-lg border border-rose-200 transition"
+              >
+                ✕ លុបគ្រូចេញ
+              </button>
+            ` : ''}
+          </div>
+
+          <!-- Search & Filter -->
+          <div class="space-y-2">
+            <input
+              type="text"
+              id="slot-teacher-search"
+              placeholder="ស្វែងរកតាមឈ្មោះ ឬកូដគ្រូ (ឧ. K1, សុខ...)"
+              value="${searchQ}"
+              class="w-full text-xs font-medium px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none"
+            />
+
+            <!-- Subject Pills -->
+            <div class="flex items-center gap-1 overflow-x-auto pb-1 text-[11px]">
+              <button
+                data-filter="ALL"
+                class="subject-pill px-2.5 py-1 rounded-lg border font-bold transition shrink-0 ${filterSubj === 'ALL' ? 'bg-blue-600 text-white border-blue-600' : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'}"
+              >
+                ទាំងអស់
+              </button>
+              ${Object.entries(subjects).map(([k, name]) => `
+                <button
+                  data-filter="${k}"
+                  class="subject-pill px-2.5 py-1 rounded-lg border font-bold transition shrink-0 ${filterSubj === k ? 'bg-blue-600 text-white border-blue-600' : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'}"
+                >
+                  ${name}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Teachers List with Availability -->
+          <div class="max-h-60 overflow-y-auto space-y-1.5 pr-1 divide-y divide-slate-100">
+            ${filteredTeachers.map(t => {
+              const occupiedClasses = getTeacherOccupiedClasses(data, shift, slotIndex, t.code);
+              const isOccupiedHere = occupiedClasses.includes(classId);
+              const isBusyElsewhere = occupiedClasses.filter(cid => cid !== classId).length > 0;
+              const isFree = occupiedClasses.length === 0;
+
+              return `
+                <div class="pt-1.5 first:pt-0 flex items-center justify-between gap-2 p-2 hover:bg-slate-50 rounded-xl transition">
+                  <div class="flex items-center gap-2">
+                    <span class="w-8 h-8 rounded-lg flex items-center justify-center font-black text-xs" style="background-color: ${t.subject_color}; color: ${t.subject_text_color}">
+                      ${t.code}
+                    </span>
+                    <div>
+                      <div class="font-bold text-xs text-slate-900">${t.name}</div>
+                      <div class="text-[10px] text-slate-500">
+                        ${t.subject_name} • បន្ទុក ${t.total_hours} ម៉ោង
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex items-center gap-2">
+                    ${isBusyElsewhere ? `
+                      <span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-300">
+                        ជាន់ថ្នាក់ ${occupiedClasses.filter(c => c !== classId).join(', ')}
+                      </span>
+                    ` : (isOccupiedHere ? `
+                      <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800">
+                        កំពុងនៅទីនេះ
+                      </span>
+                    ` : `
+                      <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                        🟢 ទំនេរ
+                      </span>
+                    `)}
+
+                    <button
+                      onclick="saveSchedulerSlot('${shift}', '${classId}', ${slotIndex}, '${t.code}')"
+                      class="px-2.5 py-1.5 text-xs font-bold rounded-lg transition ${isBusyElsewhere ? 'bg-rose-500 hover:bg-rose-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white shadow-2xs'}"
+                    >
+                      ${isOccupiedHere ? 'រក្សាទុក' : 'ជ្រើសរើស'}
+                    </button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+
+          <!-- Footer -->
+          <div class="pt-3 border-t border-slate-100 flex justify-end">
+            <button
+              onclick="closeModal()"
+              class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition"
+            >
+              បិទផ្ទាំង
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Hook listeners for search & subject pills
+    const searchInput = document.getElementById('slot-teacher-search');
+    if (searchInput) {
+      searchInput.addEventListener('input', e => {
+        renderModalContent(filterSubj, e.target.value);
+      });
+      // Keep focus and cursor at end
+      if (searchQ) {
+        searchInput.focus();
+        searchInput.setSelectionRange(searchQ.length, searchQ.length);
+      }
+    }
+
+    document.querySelectorAll('.subject-pill').forEach(btn => {
+      btn.addEventListener('click', () => {
+        renderModalContent(btn.dataset.filter, searchQ);
+      });
+    });
+  }
+
+  renderModalContent();
+}
+
+async function saveSchedulerSlot(shift, classId, slotIndex, teacherCode) {
+  if (appState.userRole !== 'admin') {
+    showToast('⚠️ ទាមទារសិទ្ធិ Admin ដើម្បីកែប្រែកាលវិភាគ!');
+    openRoleModal('admin');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/schedule/save-slot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shift: shift,
+        class_id: classId,
+        slot_index: slotIndex,
+        teacher_code: teacherCode
+      })
+    });
+
+    const result = await res.json();
+    if (result.status === 'success') {
+      appState.data.morning_schedule = result.morning_schedule;
+      appState.data.afternoon_schedule = result.afternoon_schedule;
+      closeModal();
+      showToast(`✅ ${result.message}`);
+      await refreshData();
+      renderActiveTab();
+    } else {
+      alert('⚠️ ' + (result.message || 'មិនអាចកែប្រែម៉ោងបានទេ'));
+    }
+  } catch (err) {
+    alert('❌ មានបញ្ហាក្នុងការភ្ជាប់ Database ៖ ' + err.message);
+  }
+}
+
+function openClearClassModal(shift, classId) {
+  if (appState.userRole !== 'admin') {
+    showToast('⚠️ ទាមទារសិទ្ធិ Admin ដើម្បីសម្អាតម៉ោងបង្រៀន!');
+    openRoleModal('admin');
+    return;
+  }
+
+  const modal = document.getElementById('edit-modal');
+  if (!modal) return;
+
+  modal.innerHTML = `
+    <div class="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+      <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4 border border-slate-200">
+        <div class="flex items-center gap-3 border-b pb-3">
+          <span class="w-10 h-10 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center text-xl font-bold">
+            🧹
+          </span>
+          <div>
+            <h3 class="font-bold text-base text-gray-900">សម្អាតកាលវិភាគថ្នាក់ ${classId}</h3>
+            <p class="text-xs text-slate-500">លុបម៉ោងបង្រៀនទាំងអស់ក្នុងថ្នាក់នេះដើម្បីរៀបចំសារជាថ្មី</p>
+          </div>
+        </div>
+
+        <div class="space-y-2 text-xs">
+          <p class="text-slate-600">សូមជ្រើសរើសជម្រើសសម្អាត ៖</p>
+          <div class="grid grid-cols-1 gap-2">
+            <button
+              onclick="confirmClearClass('${classId}', 'morning')"
+              class="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-blue-500 hover:bg-blue-50 font-bold transition flex items-center justify-between"
+            >
+              <span>☀️ សម្អាតតែពេលព្រឹក (Morning 28 ម៉ោង)</span>
+              <span class="text-slate-400">➔</span>
+            </button>
+            <button
+              onclick="confirmClearClass('${classId}', 'afternoon')"
+              class="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-amber-500 hover:bg-amber-50 font-bold transition flex items-center justify-between"
+            >
+              <span>🌙 សម្អាតតែពេលរសៀល (Afternoon 24 ម៉ោង)</span>
+              <span class="text-slate-400">➔</span>
+            </button>
+            <button
+              onclick="confirmClearClass('${classId}', 'both')"
+              class="w-full text-left p-3 rounded-xl border border-rose-300 hover:bg-rose-50 text-rose-700 font-bold transition flex items-center justify-between"
+            >
+              <span>💥 សម្អាតទាំងព្រឹក និងរសៀល (ទាំងស្រុង)</span>
+              <span class="text-rose-500">➔</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-slate-100 flex justify-end">
+          <button
+            onclick="closeModal()"
+            class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition"
+          >
+            បោះបង់
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function confirmClearClass(classId, clearShift) {
+  try {
+    const res = await fetch('/api/schedule/clear-class', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        class_id: classId,
+        shift: clearShift
+      })
+    });
+
+    const result = await res.json();
+    if (result.status === 'success') {
+      appState.data.morning_schedule = result.morning_schedule;
+      appState.data.afternoon_schedule = result.afternoon_schedule;
+      closeModal();
+      showToast(`✅ ${result.message}`);
+      await refreshData();
+      renderActiveTab();
+    } else {
+      alert('⚠️ ' + (result.message || 'មិនអាចសម្អាតបានទេ'));
+    }
+  } catch (err) {
+    alert('❌ មានបញ្ហា ៖ ' + err.message);
+  }
+}
+
+async function saveAllScheduleToCloud() {
+  if (appState.userRole !== 'admin') {
+    showToast('⚠️ ទាមទារសិទ្ធិ Admin ដើម្បីរក្សាទុកកាលវិភាគទៅ Cloud!');
+    openRoleModal('admin');
+    return;
+  }
+
+  try {
+    showToast('⏳ កំពុងរក្សាទុកកាលវិភាគទៅកាន់ Cloud Database...');
+    const res = await fetch('/api/schedule/save-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        morning_schedule: appState.data.morning_schedule,
+        afternoon_schedule: appState.data.afternoon_schedule
+      })
+    });
+
+    const result = await res.json();
+    if (result.status === 'success') {
+      showToast('✅ បានរក្សាទុកកាលវិភាគទៅកាន់ Cloud Database រួចរាល់!');
+      await refreshData();
+      renderActiveTab();
+    } else {
+      alert('⚠️ ' + (result.message || 'មិនអាចរក្សាទុកបានទេ'));
+    }
+  } catch (err) {
+    alert('❌ មានបញ្ហាក្នុងការរក្សាទុក ៖ ' + err.message);
+  }
+}
+
+function printSchedulerSchedule() {
+  const mode = appState.schedulerMode || 'class';
+  if (mode === 'class') {
+    printSingleClass(appState.schedulerClassId || '12A');
+  } else {
+    printSingleTeacherCard(appState.schedulerTeacherCode || 'I3');
+  }
 }
 
 // -------------------------------------------------------------

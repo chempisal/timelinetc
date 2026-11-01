@@ -1,12 +1,10 @@
 """
 Cloud Database Management & Online Synchronization Layer
-(ម៉ូឌុលគ្រប់គ្រង Database រួមគ្នានៅលើអនឡាញ)
+(ម៉ូឌុលតភ្ជាប់ Database រួមគ្នានៅលើអនឡាញផ្ទាល់ក្នុង Source Code)
 
-Supports:
-1. Vercel KV / Upstash Redis (Auto-detected via environment variables)
-2. Google Firebase Realtime Database (via FIREBASE_DB_URL or cloud_config.json)
-3. Supabase REST API (via SUPABASE_URL & SUPABASE_KEY)
-4. Fallback to Local Persistent Data
+Database Engine: Upstash Redis / Vercel KV REST API
+- Single Source of Truth for all connected devices
+- Real-time online synchronization
 """
 
 import os
@@ -16,189 +14,178 @@ import urllib.error
 from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(BASE_DIR, 'data', 'cloud_config.json')
+DATA_FILE = os.path.join(BASE_DIR, 'data', 'schedule_data.json')
+CUSTOM_HOMEROOM_FILE = os.path.join(BASE_DIR, 'data', 'custom_homeroom.json')
+CUSTOM_TEACHERS_FILE = os.path.join(BASE_DIR, 'data', 'custom_teachers.json')
 
-def load_cloud_config():
-    """Loads cloud database settings from local file or environment."""
-    # 1. Check environment variables first (e.g. on Vercel)
-    env_kv_url = os.environ.get('KV_REST_API_URL') or os.environ.get('UPSTASH_REDIS_REST_URL', '')
-    env_kv_token = os.environ.get('KV_REST_API_TOKEN') or os.environ.get('UPSTASH_REDIS_REST_TOKEN', '')
-    env_firebase_url = os.environ.get('FIREBASE_DB_URL', '')
+# -------------------------------------------------------------------------
+# DIRECT CLOUD DATABASE CREDENTIALS IN SOURCE CODE (ការភ្ជាប់ DATABASE ផ្ទាល់)
+# -------------------------------------------------------------------------
+DEFAULT_KV_URL = "https://optimal-gannet-92171.upstash.io"
+DEFAULT_KV_TOKEN = "gQAAAAAAAWgLAQIgcDJlZWM2MzkwZWEyZGE0OGRmYWQ3NTg3ZTU2NDhlZjI1NA"
+SHARED_DB_KEY = "timetable_shared_data"
 
-    cfg = {
-        'provider': 'auto',
-        'firebase_url': env_firebase_url,
-        'vercel_kv_url': env_kv_url,
-        'vercel_kv_token': env_kv_token,
-        'auto_sync': True,
-        'last_synced_at': None,
-        'status': 'ready'
-    }
-
-    # 2. Check /tmp on serverless or data/cloud_config.json
-    tmp_path = os.path.join('/tmp', 'cloud_config.json')
-    for path in [tmp_path, CONFIG_FILE]:
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    file_cfg = json.load(f)
-                    cfg.update(file_cfg)
-                    break
-            except Exception:
-                pass
-
-    # Re-apply env vars if not empty
-    if env_kv_url and not cfg.get('vercel_kv_url'):
-        cfg['vercel_kv_url'] = env_kv_url
-        cfg['vercel_kv_token'] = env_kv_token
-    if env_firebase_url and not cfg.get('firebase_url'):
-        cfg['firebase_url'] = env_firebase_url
-
-    return cfg
-
-def save_cloud_config(cfg):
-    """Saves cloud database configuration."""
-    try:
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-    except (OSError, IOError, PermissionError):
-        try:
-            tmp_path = os.path.join('/tmp', 'cloud_config.json')
-            with open(tmp_path, 'w', encoding='utf-8') as f:
-                json.dump(cfg, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+def get_db_credentials():
+    """Gets cloud database URL and Token with priority to env vars."""
+    url = os.environ.get('KV_REST_API_URL') or os.environ.get('UPSTASH_REDIS_REST_URL') or DEFAULT_KV_URL
+    token = os.environ.get('KV_REST_API_TOKEN') or os.environ.get('UPSTASH_REDIS_REST_TOKEN') or DEFAULT_KV_TOKEN
+    return url.rstrip('/'), token
 
 class CloudDatabase:
-    """Manages reading and writing shared timetable data to cloud database."""
+    """Manages direct read/write operations to the shared online cloud database."""
 
     @staticmethod
     def get_active_provider():
-        cfg = load_cloud_config()
-        if cfg.get('vercel_kv_url') and cfg.get('vercel_kv_token'):
-            return 'vercel_kv', cfg
-        if cfg.get('firebase_url'):
-            return 'firebase', cfg
-        return 'local', cfg
+        url, _ = get_db_credentials()
+        return "Upstash Redis / Vercel KV", {
+            "provider": "Upstash Redis",
+            "firebase_url": "",
+            "vercel_kv_url": url,
+            "vercel_kv_token": "******",
+            "last_synced_at": datetime.utcnow().isoformat(),
+            "auto_sync": True
+        }
 
     @staticmethod
     def test_connection():
-        """Tests connection to active cloud database provider."""
-        provider, cfg = CloudDatabase.get_active_provider()
-        if provider == 'vercel_kv':
-            url = f"{cfg['vercel_kv_url'].rstrip('/')}/ping"
-            req = urllib.request.Request(
-                url,
-                headers={'Authorization': f"Bearer {cfg['vercel_kv_token']}"}
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=5) as res:
-                    return {'status': 'success', 'provider': 'Vercel KV / Upstash Redis', 'message': 'បានតភ្ជាប់ទៅកាន់ Vercel KV ដោយជោគជ័យ!'}
-            except Exception as e:
-                return {'status': 'error', 'provider': 'Vercel KV', 'message': f'មិនអាចភ្ជាប់ទៅកាន់ Vercel KV បានទេ ៖ {e}'}
-
-        elif provider == 'firebase':
-            fb_url = cfg['firebase_url'].rstrip('/')
-            if not fb_url.endswith('.json'):
-                test_url = f"{fb_url}/ping.json"
-            else:
-                test_url = fb_url
-            req = urllib.request.Request(test_url, headers={'User-Agent': 'Mozilla/5.0'})
-            try:
-                with urllib.request.urlopen(req, timeout=5) as res:
-                    return {'status': 'success', 'provider': 'Google Firebase Realtime Database', 'message': 'បានតភ្ជាប់ទៅកាន់ Firebase Realtime Database ដោយជោគជ័យ!'}
-            except Exception as e:
-                return {'status': 'error', 'provider': 'Firebase', 'message': f'មិនអាចភ្ជាប់ទៅកាន់ Firebase បានទេ ៖ {e}'}
-
-        return {'status': 'local', 'provider': 'Local Persistent Storage', 'message': 'បច្ចុប្បន្នកំពុងប្រើប្រាស់ Local/Offline Database។ លោកអ្នកអាចកំណត់ Cloud Database URL ដើម្បីសមកាលកម្មរួមគ្នា។'}
+        """Tests live connection to cloud database."""
+        url, token = get_db_credentials()
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(['PING']).encode('utf-8'),
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json'
+            }
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=6) as res:
+                resp = json.loads(res.read().decode('utf-8'))
+                if resp.get('result') == 'PONG':
+                    return {
+                        'status': 'success',
+                        'provider': 'Cloud Database (Upstash / Vercel KV)',
+                        'message': 'បានតភ្ជាប់ទៅកាន់ Cloud Database ដោយជោគជ័យ! ទិន្នន័យចែករំលែករួមគ្នារវាងគ្រប់ឧបករណ៍។'
+                    }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'provider': 'Cloud Database',
+                'message': f'មិនអាចភ្ជាប់ទៅកាន់ Cloud Database បានទេ ៖ {e}'
+            }
+        return {'status': 'error', 'provider': 'Cloud Database', 'message': 'ការតភ្ជាប់បរាជ័យ'}
 
     @staticmethod
     def fetch_online_data():
         """
-        Fetches the complete shared dataset from the active cloud database.
-        Returns None if not connected or error.
+        Fetches the complete shared dataset directly from online database.
+        Returns dictionary dataset or None on network error.
         """
-        provider, cfg = CloudDatabase.get_active_provider()
-        if provider == 'vercel_kv':
-            url = f"{cfg['vercel_kv_url'].rstrip('/')}/get/timetable_shared_data"
-            req = urllib.request.Request(
-                url,
-                headers={'Authorization': f"Bearer {cfg['vercel_kv_token']}"}
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=5) as res:
-                    resp = json.loads(res.read().decode('utf-8'))
-                    val = resp.get('result')
-                    if val:
-                        data = json.loads(val) if isinstance(val, str) else val
-                        return data
-            except Exception as e:
-                print(f"[CloudDB] Error reading from Vercel KV: {e}")
-                return None
-
-        elif provider == 'firebase':
-            fb_url = cfg['firebase_url'].rstrip('/')
-            if not fb_url.endswith('.json'):
-                fb_url = f"{fb_url}/timetable_shared.json"
-            req = urllib.request.Request(fb_url, headers={'User-Agent': 'Mozilla/5.0'})
-            try:
-                with urllib.request.urlopen(req, timeout=5) as res:
-                    raw = res.read().decode('utf-8')
-                    if raw and raw != 'null':
-                        return json.loads(raw)
-            except Exception as e:
-                print(f"[CloudDB] Error reading from Firebase: {e}")
-                return None
+        url, token = get_db_credentials()
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(['GET', SHARED_DB_KEY]).encode('utf-8'),
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json'
+            }
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as res:
+                resp = json.loads(res.read().decode('utf-8'))
+                raw = resp.get('result')
+                if raw:
+                    data = json.loads(raw) if isinstance(raw, str) else raw
+                    return data
+        except Exception as e:
+            print(f"[CloudDB] Error fetching from cloud: {e}")
 
         return None
 
     @staticmethod
     def push_online_data(data_payload):
         """
-        Pushes and updates shared dataset to active cloud database online.
+        Pushes and updates shared dataset to online cloud database.
         """
-        provider, cfg = CloudDatabase.get_active_provider()
+        url, token = get_db_credentials()
         data_payload['cloud_updated_at'] = datetime.utcnow().isoformat()
+        json_payload = json.dumps(data_payload, ensure_ascii=False)
 
-        if provider == 'vercel_kv':
-            url = f"{cfg['vercel_kv_url'].rstrip('/')}/set/timetable_shared_data"
-            json_str = json.dumps(data_payload, ensure_ascii=False)
-            req = urllib.request.Request(
-                url,
-                data=json_str.encode('utf-8'),
-                headers={
-                    'Authorization': f"Bearer {cfg['vercel_kv_token']}",
-                    'Content-Type': 'application/json'
-                }
-            )
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(['SET', SHARED_DB_KEY, json_payload]).encode('utf-8'),
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json'
+            }
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as res:
+                resp = json.loads(res.read().decode('utf-8'))
+                return resp.get('result') == 'OK'
+        except Exception as e:
+            print(f"[CloudDB] Error pushing to cloud: {e}")
+            return False
+
+    @staticmethod
+    def get_or_seed_data():
+        """
+        Fetches latest data from cloud database. If cloud database is empty,
+        seeds it from local files and pushes to cloud.
+        """
+        data = CloudDatabase.fetch_online_data()
+        if data and isinstance(data, dict) and 'classes' in data:
+            return data
+
+        # If cloud is not reachable or empty, load local and attempt to push
+        print("[CloudDB] Loading from local seed files...")
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            base_data = json.load(f)
+
+        custom_hr = {}
+        if os.path.exists(CUSTOM_HOMEROOM_FILE):
             try:
-                with urllib.request.urlopen(req, timeout=6) as res:
-                    cfg['last_synced_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    save_cloud_config(cfg)
-                    return True
-            except Exception as e:
-                print(f"[CloudDB] Error writing to Vercel KV: {e}")
-                return False
+                with open(CUSTOM_HOMEROOM_FILE, 'r', encoding='utf-8') as f:
+                    custom_hr = json.load(f)
+            except Exception:
+                pass
 
-        elif provider == 'firebase':
-            fb_url = cfg['firebase_url'].rstrip('/')
-            if not fb_url.endswith('.json'):
-                fb_url = f"{fb_url}/timetable_shared.json"
-            json_str = json.dumps(data_payload, ensure_ascii=False)
-            req = urllib.request.Request(
-                fb_url,
-                data=json_str.encode('utf-8'),
-                headers={'Content-Type': 'application/json'}
-            )
-            req.get_method = lambda: 'PUT'
+        custom_teachers = {}
+        if os.path.exists(CUSTOM_TEACHERS_FILE):
             try:
-                with urllib.request.urlopen(req, timeout=6) as res:
-                    cfg['last_synced_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    save_cloud_config(cfg)
-                    return True
-            except Exception as e:
-                print(f"[CloudDB] Error writing to Firebase: {e}")
-                return False
+                with open(CUSTOM_TEACHERS_FILE, 'r', encoding='utf-8') as f:
+                    custom_teachers = json.load(f)
+            except Exception:
+                pass
 
-        return False
+        for cls in base_data['classes']:
+            if cls['id'] in custom_hr:
+                cls['homeroom'] = custom_hr[cls['id']]
+
+        base_data['custom_homeroom'] = custom_hr
+        base_data['custom_teachers'] = custom_teachers
+        base_data['cloud_updated_at'] = datetime.utcnow().isoformat()
+
+        # Seed cloud
+        try:
+            CloudDatabase.push_online_data(base_data)
+        except Exception as e:
+            print(f"[CloudDB] Could not seed cloud: {e}")
+
+        return base_data
+
+def load_cloud_config():
+    url, _ = get_db_credentials()
+    return {
+        "provider": "Upstash Redis",
+        "firebase_url": "",
+        "vercel_kv_url": url,
+        "vercel_kv_token": "******",
+        "last_synced_at": datetime.utcnow().isoformat(),
+        "auto_sync": True
+    }
+
+def save_cloud_config(cfg):
+    """Stub for backwards compatibility."""
+    pass
 
